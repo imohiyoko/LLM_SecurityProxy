@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/testsecret"
 )
@@ -42,7 +42,10 @@ func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) 
 	}
 	t.Cleanup(func() { st.Close() })
 	f.store = st
-	det, _ := detect.New(nil, nil, nil)
+	det, err := rules.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
 	u, _ := url.Parse(up.URL)
 	srv := &Server{
 		Upstream:     u,

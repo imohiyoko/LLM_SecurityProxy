@@ -18,19 +18,20 @@ upstream:
 # Tell the model how placeholders work (appended to the system prompt).
 inject_notice: true
 
-detectors:
-  enable: []                       # optional rules, e.g. [ipv4]
-  disable: []                      # built-in rules to turn off, e.g. [email]
+# Detection rules come in rulesets. Built-in rulesets:
+#   builtin/credentials  API keys, tokens, private keys        (on)
+#   builtin/pii          e-mail addresses, card numbers        (on)
+#   builtin/generic      password= / api_key: assignments      (on)
+#   builtin/network      IPv4 addresses                        (off)
+# Your own rulesets are read from rules.d/ next to this file, plus `dirs`.
+# A ruleset file with the same id as a built-in one replaces it.
+# Run `llmsp rules list` to see every rule and its state, and
+# `llmsp rules test FILE` to see what would be masked.
+rulesets:
+  dirs: []                         # e.g. [~/src/my-private-rules]
+  enable: []                       # ruleset or rule ids, e.g. [builtin/network]
+  disable: []                      # e.g. [builtin/pii:email]; disable wins
 
-# Regular expressions; matching values are never masked.
+# Regular expressions; matching values are never masked, whatever rule matched.
 allowlist:
   - '@users\.noreply\.github\.com$'
-
-# Literal values to mask, e.g. internal host names or customer names.
-dictionary:
-  - kind: HOST
-    values:
-      - db.internal.example
-    case_insensitive: true
-  # - kind: CUSTOMER
-  #   file: ~/.config/llmsp/customers.txt   # one value per line

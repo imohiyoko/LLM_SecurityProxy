@@ -1,32 +1,33 @@
 // Package detect finds sensitive substrings in text.
+//
+// Rules are defined as data (see package rules); this package only runs them.
 package detect
 
 import (
-	"fmt"
 	"regexp"
-	"sort"
-	"strings"
 )
 
 // Match is a sensitive span in the input, as byte offsets.
 type Match struct {
 	Start, End int
 	Kind       string
+	// Rule is the full ID of the rule that matched, e.g. "builtin/pii:email".
+	Rule string
 }
 
-// Rule is a single detector.
+// Rule is a single compiled detector.
 type Rule struct {
-	// Name identifies the rule in configuration (enable / disable).
-	Name string
+	// ID is "<ruleset id>:<rule id>".
+	ID string
 	// Kind is the label written into the placeholder.
 	Kind string
 	Re   *regexp.Regexp
 	// Group selects the capture group to mask; 0 masks the whole match.
 	Group int
-	// Validate, if set, must return true for the value to be masked.
-	Validate func(value string) bool
-	// Optional rules are off unless enabled in configuration.
-	Optional bool
+	// Allow lists patterns; a value matching any of them is not masked.
+	Allow []*regexp.Regexp
+	// Validators must all return true for the value to be masked.
+	Validators []func(value string) bool
 }
 
 // Detector runs a set of rules.
@@ -34,38 +35,13 @@ type Detector struct {
 	rules []Rule
 }
 
-// New builds a detector from the built-in rules plus extra rules.
-// enable turns on optional built-in rules; disable turns off any built-in rule.
-func New(enable, disable []string, extra []Rule) (*Detector, error) {
-	builtin := Builtin()
-	known := map[string]bool{}
-	for _, r := range builtin {
-		known[r.Name] = true
-	}
-	on := map[string]bool{}
-	for _, n := range enable {
-		if !known[n] {
-			return nil, fmt.Errorf("detect: unknown rule %q in enable", n)
-		}
-		on[n] = true
-	}
-	off := map[string]bool{}
-	for _, n := range disable {
-		if !known[n] {
-			return nil, fmt.Errorf("detect: unknown rule %q in disable", n)
-		}
-		off[n] = true
-	}
-	var rules []Rule
-	for _, r := range builtin {
-		if off[r.Name] || (r.Optional && !on[r.Name]) {
-			continue
-		}
-		rules = append(rules, r)
-	}
-	rules = append(rules, extra...)
-	return &Detector{rules: rules}, nil
+// New builds a detector.
+func New(rules []Rule) *Detector {
+	return &Detector{rules: rules}
 }
+
+// Rules returns the rules the detector runs.
+func (d *Detector) Rules() []Rule { return d.rules }
 
 // Find returns every match of every rule. Matches may overlap; callers resolve.
 func (d *Detector) Find(s string) []Match {
@@ -76,35 +52,25 @@ func (d *Detector) Find(s string) []Match {
 			if start < 0 || start == end {
 				continue
 			}
-			if r.Validate != nil && !r.Validate(s[start:end]) {
+			if !r.accepts(s[start:end]) {
 				continue
 			}
-			out = append(out, Match{Start: start, End: end, Kind: r.Kind})
+			out = append(out, Match{Start: start, End: end, Kind: r.Kind, Rule: r.ID})
 		}
 	}
 	return out
 }
 
-// DictionaryRule masks any of the given literal values.
-func DictionaryRule(name, kind string, values []string, caseInsensitive bool) (Rule, error) {
-	var parts []string
-	for _, v := range values {
-		if v = strings.TrimSpace(v); v != "" {
-			parts = append(parts, regexp.QuoteMeta(v))
+func (r *Rule) accepts(v string) bool {
+	for _, a := range r.Allow {
+		if a.MatchString(v) {
+			return false
 		}
 	}
-	if len(parts) == 0 {
-		return Rule{}, fmt.Errorf("detect: dictionary %q has no values", name)
+	for _, ok := range r.Validators {
+		if !ok(v) {
+			return false
+		}
 	}
-	// Longest first so that "db.example" does not shadow "db.example.internal".
-	sort.Slice(parts, func(i, j int) bool { return len(parts[i]) > len(parts[j]) })
-	expr := "(?:" + strings.Join(parts, "|") + ")"
-	if caseInsensitive {
-		expr = "(?i)" + expr
-	}
-	re, err := regexp.Compile(expr)
-	if err != nil {
-		return Rule{}, err
-	}
-	return Rule{Name: name, Kind: kind, Re: re}, nil
+	return true
 }

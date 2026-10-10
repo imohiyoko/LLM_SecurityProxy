@@ -1,0 +1,36 @@
+# Example user ruleset. Copy to <config dir>/rules.d/ and edit.
+# Keep real internal names in your own copy, not in this repository.
+#
+# Rule IDs are addressed as "<ruleset id>:<rule id>", e.g. "example/org:hosts",
+# in `rulesets.enable` / `rulesets.disable`.
+
+id: example/org
+description: Names specific to an organisation.
+# default: true                      # set false to ship it disabled
+
+rules:
+  # Literal values, listed inline or in a file (one per line, # comments).
+  - id: hosts
+    kind: HOST
+    values:
+      - db.internal.example
+    # values_file: hosts.txt         # relative to this file
+    case_insensitive: true
+
+  # A regular expression (RE2). `group` masks one capture group only.
+  - id: ticket_secret
+    kind: SECRET
+    description: Value after "deploy-token:".
+    pattern: 'deploy-token:\s*([A-Za-z0-9]{16,})'
+    group: 1
+    # Values matching any allow pattern are not masked.
+    allow:
+      - '^0+$'
+
+  # A rule can be defined but left off, and enabled later from config.yaml
+  # with `rulesets.enable: [example/org:member_number]`.
+  # `validators` adds named checks a regexp cannot express (available: luhn).
+  - id: member_number
+    kind: MEMBER_ID
+    pattern: '\bM-\d{12}\b'
+    enabled: false

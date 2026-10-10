@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/testsecret"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/unmask"
@@ -19,7 +19,7 @@ func newMasker(t *testing.T, allow ...string) (*Masker, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	det, err := detect.New(nil, nil, nil)
+	det, err := rules.Default()
 	if err != nil {
 		t.Fatal(err)
 	}

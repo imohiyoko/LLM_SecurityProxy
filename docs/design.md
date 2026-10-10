@@ -32,11 +32,45 @@ extra CA bundle for TLS-inspecting proxies.
 3. Append a notice to the system prompt explaining placeholders.
 4. Forward.
 
+### Rulesets
+
+Rules are data, not code. A ruleset is a YAML file:
+
+```yaml
+id: org/internal              # lowercase, digits, . _ - and / separators
+description: ...
+default: true                 # on unless config says otherwise
+rules:
+  - id: hosts                 # unique within the ruleset
+    kind: HOST                # label in the placeholder
+    values: [...]             # literal values, or values_file (relative path)
+    case_insensitive: true
+  - id: code
+    kind: PROJECT
+    pattern: '...'            # RE2; exactly one of pattern / values
+    group: 1                  # mask one capture group only
+    allow: ['...']            # values matching these are not masked
+    validators: [luhn]        # named checks a regexp cannot express
+    enabled: true
+```
+
+- Built-in rulesets are embedded files in the same format
+  (`internal/rules/builtin`), so every default is visible and overridable.
+- User rulesets come from `<config dir>/rules.d` and `rulesets.dirs`. A user
+  ruleset with a built-in ID replaces the built-in one entirely; two user files
+  with the same ID are an error.
+- Effective state: ruleset `default`, then `rulesets.enable`, then
+  `rulesets.disable`, each taking ruleset IDs or rule IDs. A rule-level entry
+  overrides its ruleset's state. Unknown IDs and unknown YAML fields are errors,
+  so a typo cannot silently turn a rule off.
+- `.env` files are deliberately not used: they cannot express structure,
+  regular expressions are awkward to escape in them, and they live in project
+  directories that agents read and that tend to get committed.
+
 ### Masking a string
 
-1. Collect spans from: existing placeholders (protected), detector rules,
-   dictionary rules, and every value already in the store (exact match,
-   minimum length 6).
+1. Collect spans from: existing placeholders (protected), enabled rules, and
+   every value already in the store (exact match, minimum length 6).
 2. Resolve overlaps: protected first, then earliest, then longest.
 3. Skip allowlisted values; store the rest and substitute placeholders.
 

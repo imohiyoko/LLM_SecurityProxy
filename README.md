@@ -34,16 +34,37 @@ claude
 Outbound traffic uses `HTTPS_PROXY` / `HTTP_PROXY`, or `upstream.proxy` in the
 config. See [`config.example.yaml`](config.example.yaml).
 
-## What is detected
+## Rules
 
-Built-in rules: private keys, AWS access keys and secret keys, GitHub / Slack /
-Anthropic / OpenAI / Google API tokens, Slack webhooks, JWTs, e-mail addresses,
-credit card numbers (Luhn-checked), and `password=` / `api_key:` style
-assignments. IPv4 addresses are opt-in (`detectors.enable: [ipv4]`).
+Detection rules are grouped into **rulesets**, YAML files with an ID. A rule is
+addressed as `<ruleset id>:<rule id>`, e.g. `builtin/pii:email`.
 
-Add your own literal terms (host names, customer names, ...) with
-`dictionary`, and exempt values with `allowlist`. A value that was masked once
-is masked everywhere afterwards, even without the context that first revealed it.
+| Ruleset | Default | Contents |
+|---|---|---|
+| `builtin/credentials` | on | private keys, AWS keys, GitHub / Slack / Anthropic / OpenAI / Google tokens, Slack webhooks, JWTs |
+| `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked) |
+| `builtin/generic` | on | `password=` / `api_key:` style assignments |
+| `builtin/network` | off | IPv4 addresses |
+
+Add your own rulesets as `*.yaml` files in `rules.d/` next to your config (see
+[`examples/rules.d/example.yaml`](examples/rules.d/example.yaml)): literal
+values (host names, customer names, ...) or regular expressions, each with its
+own allow patterns. A file with the same ID as a built-in ruleset replaces it.
+Turn rulesets or single rules on and off in `config.yaml`:
+
+```yaml
+rulesets:
+  enable: [builtin/network]
+  disable: [builtin/pii:email]
+```
+
+```sh
+llmsp rules list              # every rule, on/off, and where it came from
+llmsp rules test notes.txt    # what would be masked (nothing is stored or sent)
+```
+
+A value that was masked once is masked everywhere afterwards, even without the
+context that first revealed it.
 
 ## How it works
 
@@ -74,7 +95,7 @@ go test ./...
 ```
 
 This is a public repository. Do not commit environment-specific values:
-keep them in your own config file. Test fixtures build fake credentials at run
+keep them in your own config and ruleset files. Test fixtures build fake credentials at run
 time (`internal/testsecret`) so the repository contains no secret-looking literals.
 
 The commit hooks check staged changes and commit messages against a private
