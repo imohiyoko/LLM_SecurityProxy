@@ -1,0 +1,11 @@
+id: builtin/network
+description: Network identifiers. Off by default; they are common in code and logs.
+default: false
+
+rules:
+  - id: ipv4
+    kind: IPV4
+    pattern: '\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b'
+    allow:
+      - '^(?:127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.255)$'
+      - '^0\.'

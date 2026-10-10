@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Commit messages are public too: check them against the private denylist.
+set -euo pipefail
+scripts/check-denylist.sh --file "$1"
