@@ -1,0 +1,36 @@
+# Copy to the config directory and edit:
+#   macOS: ~/Library/Application Support/llmsp/config.yaml
+#   Linux: ~/.config/llmsp/config.yaml
+# Keep environment-specific values in that file, not in this repository.
+
+listen: 127.0.0.1:8787
+
+upstream:
+  base_url: https://api.anthropic.com
+  # HTTP(S) proxy for outbound traffic. Empty: use HTTPS_PROXY / HTTP_PROXY.
+  proxy: ""                        # e.g. http://proxy.example.internal:8080
+  # Extra CA certificates (PEM) for TLS-inspecting proxies.
+  ca_file: ""                      # e.g. ~/certs/proxy-ca.pem
+
+# Where master.key and llmsp.db live. Default: the directory of this file.
+# data_dir: ~/.local/share/llmsp
+
+# Tell the model how placeholders work (appended to the system prompt).
+inject_notice: true
+
+detectors:
+  enable: []                       # optional rules, e.g. [ipv4]
+  disable: []                      # built-in rules to turn off, e.g. [email]
+
+# Regular expressions; matching values are never masked.
+allowlist:
+  - '@users\.noreply\.github\.com$'
+
+# Literal values to mask, e.g. internal host names or customer names.
+dictionary:
+  - kind: HOST
+    values:
+      - db.internal.example
+    case_insensitive: true
+  # - kind: CUSTOMER
+  #   file: ~/.config/llmsp/customers.txt   # one value per line

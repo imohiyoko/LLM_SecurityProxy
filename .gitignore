@@ -1,0 +1,16 @@
+# Local configuration: may contain upstream proxies, host names, dictionaries.
+/config.yaml
+/config.local.yaml
+*.local.yaml
+.env
+.env.*
+
+# Data: the database holds original values; the key decrypts them.
+*.db
+*.db-wal
+*.db-shm
+master.key
+
+# Build output
+/llmsp
+/dist/
