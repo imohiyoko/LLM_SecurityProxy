@@ -5,14 +5,16 @@ rules:
   - id: assignment
     kind: SECRET
     description: >
-      Value assigned to a password / secret / api_key / token style name.
-      The allow list rejects values that look like code rather than secrets.
-    pattern: '(?i)(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token)\b["'']?\s*[:=]\s*["'']?([^\s"''`,;]{8,})'
+      Value assigned to a password / secret / api_key / token style name,
+      including longer names built on them (SECRET_KEY, PASSWORD_HASH,
+      secretKey). The allow list rejects values that look like code rather
+      than secrets. A bare word is masked: it cannot be told apart from a
+      letters-only passphrase.
+    pattern: '(?i)(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*\b["'']?\s*[:=]\s*["'']?([^\s"''`,;]{8,})'
     group: 1
     allow:
       - '[(){}]'                                                       # getPassword(), ${X}
       - '^[$%@]'                                                       # $VAR, %VAR%, @param
       - '__LLMSP_'                                                     # already masked
       - '^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+[)\]}]*$' # process.env.API_KEY
-      - '^[A-Za-z_]{1,23}$'                                            # tokenValue
       - '(?i)^(?:x+|\*+|\.+|<[^>]*>|\[[^\]]*\]|changeme|placeholder|redacted|your[_-].*)$'
