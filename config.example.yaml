@@ -11,6 +11,9 @@ upstream:
   proxy: ""                        # e.g. http://proxy.example.internal:8080
   # Extra CA certificates (PEM) for TLS-inspecting proxies.
   ca_file: ""                      # e.g. ~/certs/proxy-ca.pem
+  # Headers that carry the API credential; forwarded unmasked. Every other
+  # header value, and the query string, is masked like the request body.
+  auth_headers: [Authorization, X-Api-Key]
 
 # Where master.key and llmsp.db live. Default: the directory of this file.
 # data_dir: ~/.local/share/llmsp

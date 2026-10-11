@@ -149,6 +149,7 @@ func serve(args []string) error {
 		Client:       client,
 		Masker:       mask.New(det, st, allow),
 		Resolver:     st,
+		AuthHeaders:  cfg.Upstream.AuthHeaders,
 		InjectNotice: cfg.Notice(),
 		Log:          log,
 	}

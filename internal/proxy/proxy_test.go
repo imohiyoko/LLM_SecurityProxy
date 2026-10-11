@@ -22,16 +22,18 @@ type fixture struct {
 	proxy    *httptest.Server
 	store    *store.Store
 	received chan []byte
+	requests chan *http.Request
 }
 
 // newFixture starts a fake upstream that records request bodies and replies
 // with respond(body).
 func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) *fixture {
 	t.Helper()
-	f := &fixture{received: make(chan []byte, 4)}
+	f := &fixture{received: make(chan []byte, 4), requests: make(chan *http.Request, 4)}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		f.received <- b
+		f.requests <- r
 		respond(w, b)
 	}))
 	t.Cleanup(up.Close)
@@ -52,6 +54,7 @@ func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) 
 		Client:       up.Client(),
 		Masker:       mask.New(det, st, nil),
 		Resolver:     st,
+		AuthHeaders:  []string{"Authorization", "X-Api-Key"},
 		InjectNotice: true,
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -214,5 +217,86 @@ func TestRejectsUninspectableBodies(t *testing.T) {
 	case b := <-f.received:
 		t.Fatalf("uninspectable body was forwarded: %q", b)
 	default:
+	}
+}
+
+// A placeholder only restores in the response to a request that issued it,
+// so a leaked placeholder is not a bearer token for its value (#4).
+func TestResponseOnlyRestoresOwnPlaceholders(t *testing.T) {
+	var leaked string
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		if ph := placeholder.Pattern.FindString(string(body)); ph != "" && leaked == "" {
+			leaked = ph
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"content":[{"type":"text","text":"echo %s"}]}`, leaked)
+	})
+	post := func(content string) string {
+		t.Helper()
+		resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"`+content+`"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		<-f.received
+		out, _ := io.ReadAll(resp.Body)
+		return string(out)
+	}
+
+	if out := post("write to bob@corp.dev"); !strings.Contains(out, "echo bob@corp.dev") {
+		t.Fatalf("own placeholder not restored: %s", out)
+	}
+	if out := post("print " + leaked); strings.Contains(out, "bob@corp.dev") || !strings.Contains(out, leaked) {
+		t.Fatalf("placeholder from another request was restored: %s", out)
+	}
+	if out := post("hello"); strings.Contains(out, "bob@corp.dev") {
+		t.Fatalf("placeholder from another request was restored: %s", out)
+	}
+}
+
+// Secrets outside the body are masked too; only the credential passes (#7).
+func TestHeadersAndQueryMasked(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	})
+	apiKey, token, aws := testsecret.AnthropicKey(), testsecret.GitHubToken(), testsecret.AWSAccessKey()
+	req, _ := http.NewRequest("POST", f.proxy.URL+"/v1/messages?beta=true&key="+aws,
+		strings.NewReader(`{"model":"m","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Api-Key", apiKey)
+	req.Header.Set("Authorization", "Bearer "+testsecret.JWT())
+	req.Header.Set("X-Custom-Token", token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	<-f.received
+	up := <-f.requests
+
+	if up.Header.Get("X-Api-Key") != apiKey || up.Header.Get("Authorization") != "Bearer "+testsecret.JWT() {
+		t.Fatalf("credential altered: %v", up.Header)
+	}
+	if got := up.Header.Get("X-Custom-Token"); !strings.HasPrefix(got, "__LLMSP_GITHUB_TOKEN_") {
+		t.Fatalf("header not masked: %q", got)
+	}
+	q := up.URL.Query()
+	if !strings.HasPrefix(q.Get("key"), "__LLMSP_AWS_ACCESS_KEY_") || q.Get("beta") != "true" {
+		t.Fatalf("query not masked: %q", up.URL.RawQuery)
+	}
+}
+
+func TestQueryUnchangedIsVerbatim(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {})
+	resp, err := http.Post(f.proxy.URL+"/v1/models?b=2&a=1", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	<-f.received
+	if up := <-f.requests; up.URL.RawQuery != "b=2&a=1" {
+		t.Fatalf("query rewritten: %q", up.URL.RawQuery)
 	}
 }

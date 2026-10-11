@@ -35,6 +35,9 @@ type Upstream struct {
 	Proxy string `yaml:"proxy"`
 	// CAFile adds PEM certificates to the trust store (TLS-inspecting proxies).
 	CAFile string `yaml:"ca_file"`
+	// AuthHeaders carry the upstream credential and are forwarded unmasked.
+	// Every other header value is masked like body content.
+	AuthHeaders []string `yaml:"auth_headers"`
 }
 
 // Rulesets selects detection rules. See internal/rules.
@@ -77,6 +80,9 @@ func Load(path string, mustExist bool) (*Config, error) {
 	}
 	if c.Upstream.BaseURL == "" {
 		c.Upstream.BaseURL = "https://api.anthropic.com"
+	}
+	if c.Upstream.AuthHeaders == nil {
+		c.Upstream.AuthHeaders = []string{"Authorization", "X-Api-Key"}
 	}
 	if c.DataDir == "" {
 		c.DataDir = filepath.Dir(path)

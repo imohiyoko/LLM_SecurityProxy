@@ -12,7 +12,7 @@ import (
 
 // sseState tracks one streamed Anthropic message.
 type sseState struct {
-	s      *Server
+	res    unmask.Resolver
 	blocks map[int]*blockState
 }
 
@@ -25,8 +25,8 @@ type blockState struct {
 // streamSSE rewrites an Anthropic Messages event stream, restoring
 // placeholders in text and tool input deltas. Thinking deltas are left as is:
 // thinking blocks are signed and come back verbatim in the next request.
-func (s *Server) streamSSE(w http.ResponseWriter, body io.Reader) (int, error) {
-	st := &sseState{s: s, blocks: map[int]*blockState{}}
+func streamSSE(w http.ResponseWriter, body io.Reader, res unmask.Resolver) (int, error) {
+	st := &sseState{res: res, blocks: map[int]*blockState{}}
 	flusher, _ := w.(http.Flusher)
 	r := bufio.NewReaderSize(body, 64<<10)
 	var event [][]byte
@@ -103,13 +103,13 @@ func (st *sseState) writeEvent(w io.Writer, lines [][]byte) error {
 		}
 		switch cb["type"] {
 		case "text":
-			st.blocks[idx] = &blockState{"text_delta", "text", unmask.NewStream(st.s.Resolver, unmask.Identity)}
+			st.blocks[idx] = &blockState{"text_delta", "text", unmask.NewStream(st.res, unmask.Identity)}
 		case "tool_use", "server_tool_use":
-			st.blocks[idx] = &blockState{"input_json_delta", "partial_json", unmask.NewStream(st.s.Resolver, unmask.JSONString)}
+			st.blocks[idx] = &blockState{"input_json_delta", "partial_json", unmask.NewStream(st.res, unmask.JSONString)}
 		}
 		if !opaqueBlock(cb) {
 			walkStrings(cb, func(v string) (string, error) {
-				out, _ := unmask.Replace(v, st.s.Resolver, unmask.Identity)
+				out, _ := unmask.Replace(v, st.res, unmask.Identity)
 				return out, nil
 			})
 		}

@@ -29,8 +29,13 @@ extra CA bundle for TLS-inspecting proxies.
    - Plain-text document sources (`media_type: text/*`) are content.
    - `thinking` / `redacted_thinking` blocks are passed through byte for byte:
      they are signed and editing them makes the API reject the request.
-3. Append a notice to the system prompt explaining placeholders.
-4. Forward.
+3. Mask header values and query keys and values the same way. Only the
+   headers in `upstream.auth_headers` (default `Authorization`, `X-Api-Key`)
+   are forwarded unmasked; they carry the upstream credential. An unchanged
+   query is forwarded byte for byte; a malformed one is rejected. The URL path
+   is forwarded as is.
+4. Append a notice to the system prompt explaining placeholders.
+5. Forward.
 
 ### Rulesets
 
@@ -69,10 +74,14 @@ rules:
 
 ### Masking a string
 
-1. Collect spans from: existing placeholders (protected), enabled rules, and
-   every value already in the store (exact match, minimum length 6).
+1. Collect spans from: existing placeholders, enabled rules, and every value
+   already in the store (exact match, minimum length 6). An existing
+   placeholder is protected only if the store issued its ID under exactly
+   that kind; any other placeholder-shaped text is masked as a whole, since
+   its kind segment can hide a token that detectors miss there.
 2. Resolve overlaps: protected first, then earliest, then longest.
 3. Skip allowlisted values; store the rest and substitute placeholders.
+4. Record the IDs substituted; they are the request's restore scope.
 
 The known-value pass matters. After a response is unmasked, the agent's history
 contains the real value, often without the context (`password=`) that a
@@ -93,8 +102,13 @@ value is never missed.
 - Opaque: the HMAC key is secret; the ID says nothing about the value.
 - Identifier-shaped: valid in most languages, needs no escaping in JSON or
   shell, and models reproduce it reliably.
-- The kind is cosmetic (it helps the model understand context); lookup uses the
-  ID only. A value keeps the kind it was first stored with.
+- The kind helps the model understand context. A value keeps the kind it was
+  first stored with, and only that spelling counts as an issued placeholder.
+- Not a bearer token: a response restores only the placeholders issued while
+  masking its own request (step 4 above). History is resent every turn, so
+  every value the model can legitimately refer to is masked again in the
+  current request; a placeholder that leaked elsewhere and comes back on its
+  own is left as is.
 
 ## Response path
 
@@ -108,7 +122,7 @@ value is never missed.
     flushed before `content_block_stop`.
   - `thinking_delta` is not restored: the thinking block comes back verbatim in
     the next request and must still match its signature.
-- Unknown IDs are left untouched.
+- IDs outside the request's scope, and unknown IDs, are left untouched.
 
 ## Storage
 
@@ -121,7 +135,8 @@ into memory at start-up.
 
 - Loopback only by default; responses contain restored secrets.
 - Logs record counts per kind, never values.
-- The client's API key is forwarded unchanged; llmsp does not store it.
+- The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
+  does not store it.
 
 ## Not yet
 
