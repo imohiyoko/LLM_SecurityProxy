@@ -27,12 +27,12 @@ added() { awk '/^diff --git /{h=0} /^@@/{h=1; next} h && /^\+/'; }
 
 case "${1:-}" in
   --staged) text="$(git var GIT_AUTHOR_IDENT; git var GIT_COMMITTER_IDENT
-                    git diff --cached --name-only
+                    git -c core.quotePath=false diff --cached --name-only
                     git diff --cached -U0 --no-color | added)" ;;
   --file)   text="$(cat "$2")" ;;
   --range)  text="$(git log --format='%an <%ae>%n%cn <%ce>%n%B' "$2"
-                    git diff --name-only "$2"
-                    git diff -U0 --no-color "$2" | added)" ;;
+                    git -c core.quotePath=false log --format= --name-only "$2"
+                    git log --format= -p -U0 --no-color "$2" | added)" ;;
   *) echo "usage: $0 --staged | --file PATH | --range A..B" >&2; exit 2 ;;
 esac
 
