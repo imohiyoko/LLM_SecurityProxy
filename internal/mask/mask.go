@@ -25,6 +25,11 @@ const cacheMaxEntries = 4096
 // Stats counts masked values per kind.
 type Stats map[string]int
 
+// IDs is the set of placeholder IDs issued while masking one request. Only
+// these may be restored in the response to that request: a placeholder is
+// not a bearer token for its value in any other request.
+type IDs map[string]bool
+
 // Masker is safe for concurrent use.
 type Masker struct {
 	det   *detect.Detector
@@ -39,6 +44,7 @@ type Masker struct {
 type cached struct {
 	out   string
 	stats Stats
+	ids   []string
 }
 
 // New creates a masker. Values matching any allow pattern are never masked.
@@ -52,8 +58,9 @@ type span struct {
 	keep       bool // existing placeholder: protect, do not mask
 }
 
-// String masks s and adds what it masked to stats.
-func (m *Masker) String(s string, stats Stats) (string, error) {
+// String masks s, adds what it masked to stats and the placeholder IDs it
+// issued to ids. ids may be nil.
+func (m *Masker) String(s string, stats Stats, ids IDs) (string, error) {
 	if s == "" {
 		return s, nil
 	}
@@ -71,18 +78,21 @@ func (m *Masker) String(s string, stats Stats) (string, error) {
 			for k, n := range c.stats {
 				stats[k] += n
 			}
+			addIDs(ids, c.ids)
 			return c.out, nil
 		}
 	}
 
 	local := Stats{}
-	out, err := m.mask(s, known, local)
+	var issued []string
+	out, err := m.mask(s, known, local, &issued)
 	if err != nil {
 		return "", err
 	}
 	for k, n := range local {
 		stats[k] += n
 	}
+	addIDs(ids, issued)
 
 	if len(s) >= cacheMinLen {
 		// Masking may have stored new values; only cache against the version
@@ -96,16 +106,35 @@ func (m *Masker) String(s string, stats Stats) (string, error) {
 		if len(m.cache) >= cacheMaxEntries {
 			m.cache = map[string]cached{}
 		}
-		m.cache[s] = cached{out: out, stats: local}
+		m.cache[s] = cached{out: out, stats: local, ids: issued}
 		m.mu.Unlock()
 	}
 	return out, nil
 }
 
-func (m *Masker) mask(s string, known []string, stats Stats) (string, error) {
+func addIDs(ids IDs, add []string) {
+	if ids == nil {
+		return
+	}
+	for _, id := range add {
+		ids[id] = true
+	}
+}
+
+func (m *Masker) mask(s string, known []string, stats Stats, issued *[]string) (string, error) {
 	var spans []span
-	for _, loc := range placeholder.Pattern.FindAllStringIndex(s, -1) {
-		spans = append(spans, span{start: loc[0], end: loc[1], keep: true})
+	// Only a placeholder this store issued, written exactly as issued, is
+	// protected. Anything else of that shape is masked as a whole: its kind
+	// segment can carry an uppercase token (an AWS key, say) that detectors
+	// miss there, because `_` defeats their \b. Masking round-trips, so the
+	// client still gets the text back unchanged.
+	for _, sub := range placeholder.Pattern.FindAllStringSubmatchIndex(s, -1) {
+		kind, id := s[sub[2]:sub[3]], s[sub[4]:sub[5]]
+		if stored, ok := m.store.Kind(id); ok && stored == kind {
+			spans = append(spans, span{start: sub[0], end: sub[1], keep: true})
+		} else {
+			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET"})
+		}
 	}
 	for _, d := range m.det.Find(s) {
 		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind})
@@ -175,6 +204,7 @@ func (m *Masker) mask(s string, known []string, stats Stats) (string, error) {
 		b.WriteString(placeholder.Format(kind, id))
 		last = sp.end
 		stats[kind]++
+		*issued = append(*issued, id)
 	}
 	b.WriteString(s[last:])
 	return b.String(), nil

@@ -31,9 +31,11 @@ const Notice = "Some sensitive values in this conversation were replaced by a lo
 
 // Server is an http.Handler.
 type Server struct {
-	Upstream     *url.URL
-	Client       *http.Client
-	Masker       *mask.Masker
+	Upstream *url.URL
+	Client   *http.Client
+	Masker   *mask.Masker
+	// Resolver looks up placeholder values. A response only restores the
+	// placeholders issued while masking its own request.
 	Resolver     unmask.Resolver
 	InjectNotice bool
 	Log          *slog.Logger
@@ -47,7 +49,7 @@ var hopHeaders = []string{
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := s.Log.With("method", r.Method, "path", r.URL.Path)
 
-	body, stats, err := s.maskRequest(r)
+	body, stats, ids, err := s.maskRequest(r)
 	if err != nil {
 		var he *httpError
 		if errors.As(err, &he) {
@@ -96,14 +98,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header()[k] = v
 	}
 
+	res := scoped{s.Resolver, ids}
 	ct := resp.Header.Get("Content-Type")
 	var restored int
 	switch {
 	case strings.HasPrefix(ct, "text/event-stream"):
 		w.WriteHeader(resp.StatusCode)
-		restored, err = s.streamSSE(w, resp.Body)
+		restored, err = streamSSE(w, resp.Body, res)
 	case strings.HasPrefix(ct, "application/json"):
-		restored, err = s.unmaskJSON(w, resp)
+		restored, err = unmaskJSON(w, resp, res)
 	default:
 		w.WriteHeader(resp.StatusCode)
 		_, err = io.Copy(w, resp.Body)
@@ -123,35 +126,48 @@ type httpError struct {
 
 func (e *httpError) Error() string { return e.msg }
 
-func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, error) {
-	stats := mask.Stats{}
+// scoped resolves only the IDs issued while masking one request.
+type scoped struct {
+	r   unmask.Resolver
+	ids mask.IDs
+}
+
+func (s scoped) Resolve(id string) (string, bool) {
+	if !s.ids[id] {
+		return "", false
+	}
+	return s.r.Resolve(id)
+}
+
+func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, error) {
+	stats, ids := mask.Stats{}, mask.IDs{}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes+1))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(raw) > MaxBodyBytes {
-		return nil, nil, &httpError{http.StatusRequestEntityTooLarge, "llmsp: request body too large"}
+		return nil, nil, nil, &httpError{http.StatusRequestEntityTooLarge, "llmsp: request body too large"}
 	}
 	if len(raw) == 0 {
-		return raw, stats, nil
+		return raw, stats, ids, nil
 	}
 	// Fail closed: anything we cannot inspect is not forwarded.
 	if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-		return nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: compressed request bodies are not supported"}
+		return nil, nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: compressed request bodies are not supported"}
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var doc any
 	if err := dec.Decode(&doc); err != nil {
-		return nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be JSON"}
+		return nil, nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be JSON"}
 	}
 	if dec.More() {
-		return nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be a single JSON value"}
+		return nil, nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be a single JSON value"}
 	}
 
-	doc, err = walkStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats) })
+	doc, err = walkStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats, ids) })
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if s.InjectNotice && isAnthropicMessages(r.URL.Path) {
 		if m, ok := doc.(map[string]any); ok {
@@ -159,7 +175,7 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, error) {
 		}
 	}
 	out, err := marshal(doc)
-	return out, stats, err
+	return out, stats, ids, err
 }
 
 func isAnthropicMessages(path string) bool {
@@ -180,7 +196,7 @@ func injectSystemNotice(m map[string]any) {
 	}
 }
 
-func (s *Server) unmaskJSON(w http.ResponseWriter, resp *http.Response) (int, error) {
+func unmaskJSON(w http.ResponseWriter, resp *http.Response, res unmask.Resolver) (int, error) {
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes))
 	if err != nil {
 		return 0, err
@@ -195,7 +211,7 @@ func (s *Server) unmaskJSON(w http.ResponseWriter, resp *http.Response) (int, er
 	}
 	total := 0
 	doc, _ = walkStrings(doc, func(v string) (string, error) {
-		out, n := unmask.Replace(v, s.Resolver, unmask.Identity)
+		out, n := unmask.Replace(v, res, unmask.Identity)
 		total += n
 		return out, nil
 	})

@@ -200,6 +200,14 @@ func (s *Store) Resolve(id string) (string, bool) {
 	return e.value, ok
 }
 
+// Kind returns the kind id was first stored under.
+func (s *Store) Kind(id string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.values[id]
+	return e.kind, ok
+}
+
 // Known returns every stored value, longest first, and a version that changes
 // whenever the set changes. The slice must not be modified.
 func (s *Store) Known() ([]string, uint64) {

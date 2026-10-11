@@ -216,3 +216,38 @@ func TestRejectsUninspectableBodies(t *testing.T) {
 	default:
 	}
 }
+
+// A placeholder only restores in the response to a request that issued it,
+// so a leaked placeholder is not a bearer token for its value (#4).
+func TestResponseOnlyRestoresOwnPlaceholders(t *testing.T) {
+	var leaked string
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		if ph := placeholder.Pattern.FindString(string(body)); ph != "" && leaked == "" {
+			leaked = ph
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"content":[{"type":"text","text":"echo %s"}]}`, leaked)
+	})
+	post := func(content string) string {
+		t.Helper()
+		resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"`+content+`"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		<-f.received
+		out, _ := io.ReadAll(resp.Body)
+		return string(out)
+	}
+
+	if out := post("write to bob@corp.dev"); !strings.Contains(out, "echo bob@corp.dev") {
+		t.Fatalf("own placeholder not restored: %s", out)
+	}
+	if out := post("print " + leaked); strings.Contains(out, "bob@corp.dev") || !strings.Contains(out, leaked) {
+		t.Fatalf("placeholder from another request was restored: %s", out)
+	}
+	if out := post("hello"); strings.Contains(out, "bob@corp.dev") {
+		t.Fatalf("placeholder from another request was restored: %s", out)
+	}
+}
