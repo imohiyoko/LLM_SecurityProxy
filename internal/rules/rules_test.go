@@ -51,6 +51,16 @@ func TestBuiltinPositive(t *testing.T) {
 		{"builtin/pii:email", "contact alice@corp.dev now", "alice@corp.dev"},
 		{"builtin/generic:assignment", `DB_PASSWORD="s3cr3t-Value!"`, "s3cr3t-Value!"},
 	}
+	// Card numbers of every length the luhn validator accepts.
+	for _, card := range []string{testsecret.Card13(), testsecret.Card14(), "3622 7206 2716 67"} {
+		cases = append(cases, struct{ rule, text, want string }{"builtin/pii:credit_card", "card " + card + " end", card})
+	}
+	// Names that extend a keyword, and letters-only values.
+	for _, name := range []string{"SECRET_KEY", "SECRET_TOKEN", "PASSWORD_HASH", "secret-key", "secretKey", "passwordHash", "password"} {
+		for _, v := range []string{"s3cr3t-Value!", testsecret.Passphrase(), "abcdefghijklmnopqrstuvw"} {
+			cases = append(cases, struct{ rule, text, want string }{"builtin/generic:assignment", name + "=" + v + "\n", v})
+		}
+	}
 	for _, c := range cases {
 		t.Run(c.rule, func(t *testing.T) {
 			got := found(d, c.text)
@@ -73,9 +83,12 @@ func TestBuiltinNegative(t *testing.T) {
 		"mail user@example.com",
 		"created_at: 1700000000000",
 		"card 4111 1111 1111 1112",
+		"card 4222222222223", // 13 digits, fails luhn
+		"id 411111111111",    // 12 digits, too short for a card
 		"apiKey: process.env.API_KEY",
 		"password = getPassword(user)",
 		"token: tokenValue",
+		"secretary=JaneDoeSmith", // a name that merely starts with a keyword
 		`secret: "${SECRET}"`,
 		"password: <your-password>",
 		"host 10.0.0.1", // network ruleset is off by default

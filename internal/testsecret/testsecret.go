@@ -30,3 +30,12 @@ func PrivateKey() string {
 
 // Card is a Luhn-valid test card number.
 func Card() string { return "4111" + " 1111 1111 1111" }
+
+// Card13 is a Luhn-valid 13-digit test card number (old Visa).
+func Card13() string { return "4222" + "222222222" }
+
+// Card14 is a Luhn-valid 14-digit test card number (Diners Club).
+func Card14() string { return "3056" + "9309025904" }
+
+// Passphrase is a letters-only secret value.
+func Passphrase() string { return "MyPlain" + "SecretValue" }
