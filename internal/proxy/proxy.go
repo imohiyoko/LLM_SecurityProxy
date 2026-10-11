@@ -36,7 +36,10 @@ type Server struct {
 	Masker   *mask.Masker
 	// Resolver looks up placeholder values. A response only restores the
 	// placeholders issued while masking its own request.
-	Resolver     unmask.Resolver
+	Resolver unmask.Resolver
+	// AuthHeaders are forwarded unmasked: they carry the upstream credential.
+	// Every other header value is masked.
+	AuthHeaders  []string
 	InjectNotice bool
 	Log          *slog.Logger
 }
@@ -62,9 +65,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	query, err := s.maskQuery(r.URL.RawQuery, stats, ids)
+	if err != nil {
+		log.Warn("request rejected", "status", http.StatusBadRequest, "reason", "bad query")
+		writeError(w, http.StatusBadRequest, "llmsp: malformed query string")
+		return
+	}
+
 	target := *s.Upstream
 	target.Path = strings.TrimSuffix(s.Upstream.Path, "/") + r.URL.Path
-	target.RawQuery = r.URL.RawQuery
+	target.RawQuery = query
 
 	out, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
@@ -74,6 +84,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out.Header = r.Header.Clone()
 	for _, h := range hopHeaders {
 		out.Header.Del(h)
+	}
+	if err := s.maskHeader(out.Header, stats, ids); err != nil {
+		log.Error("mask failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "llmsp: masking failed; request not forwarded")
+		return
 	}
 	// Let the transport negotiate gzip and decompress, so we can read bodies.
 	out.Header.Del("Accept-Encoding")
@@ -176,6 +191,56 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, err
 	}
 	out, err := marshal(doc)
 	return out, stats, ids, err
+}
+
+// maskHeader masks every header value except the upstream credential.
+func (s *Server) maskHeader(h http.Header, stats mask.Stats, ids mask.IDs) error {
+	for k, vs := range h {
+		if slices.ContainsFunc(s.AuthHeaders, func(a string) bool { return strings.EqualFold(a, k) }) {
+			continue
+		}
+		for i, v := range vs {
+			out, err := s.Masker.String(v, stats, ids)
+			if err != nil {
+				return err
+			}
+			vs[i] = out
+		}
+	}
+	return nil
+}
+
+// maskQuery masks query keys and values. An unchanged query is forwarded
+// byte for byte.
+func (s *Server) maskQuery(raw string, stats mask.Stats, ids mask.IDs) (string, error) {
+	if raw == "" {
+		return raw, nil
+	}
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", err
+	}
+	masked := url.Values{}
+	changed := false
+	for k, vs := range q {
+		mk, err := s.Masker.String(k, stats, ids)
+		if err != nil {
+			return "", err
+		}
+		for _, v := range vs {
+			mv, err := s.Masker.String(v, stats, ids)
+			if err != nil {
+				return "", err
+			}
+			masked.Add(mk, mv)
+			changed = changed || mv != v
+		}
+		changed = changed || mk != k
+	}
+	if !changed {
+		return raw, nil
+	}
+	return masked.Encode(), nil
 }
 
 func isAnthropicMessages(path string) bool {
