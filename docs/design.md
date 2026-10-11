@@ -29,8 +29,13 @@ extra CA bundle for TLS-inspecting proxies.
    - Plain-text document sources (`media_type: text/*`) are content.
    - `thinking` / `redacted_thinking` blocks are passed through byte for byte:
      they are signed and editing them makes the API reject the request.
-3. Append a notice to the system prompt explaining placeholders.
-4. Forward.
+3. Mask header values and query keys and values the same way. Only the
+   headers in `upstream.auth_headers` (default `Authorization`, `X-Api-Key`)
+   are forwarded unmasked; they carry the upstream credential. An unchanged
+   query is forwarded byte for byte; a malformed one is rejected. The URL path
+   is forwarded as is.
+4. Append a notice to the system prompt explaining placeholders.
+5. Forward.
 
 ### Rulesets
 
@@ -130,7 +135,8 @@ into memory at start-up.
 
 - Loopback only by default; responses contain restored secrets.
 - Logs record counts per kind, never values.
-- The client's API key is forwarded unchanged; llmsp does not store it.
+- The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
+  does not store it.
 
 ## Not yet
 
