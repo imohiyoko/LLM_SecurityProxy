@@ -8,9 +8,9 @@
 # One term per line, case-insensitive, fixed strings. Lines starting with # are ignored.
 #
 # Usage:
-#   scripts/check-denylist.sh --staged       staged diff (pre-commit)
+#   scripts/check-denylist.sh --staged       staged diff, file names and identity (pre-commit)
 #   scripts/check-denylist.sh --file PATH    a file (commit-msg, PR body)
-#   scripts/check-denylist.sh --range A..B   commits, authors and messages in a range
+#   scripts/check-denylist.sh --range A..B   commits, authors, messages and file names in a range
 set -euo pipefail
 
 list="${LLMSP_DENYLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/llmsp/denylist.txt}"
@@ -18,13 +18,21 @@ if [[ ! -f "$list" ]]; then
   echo "denylist: $list not found; skipping (create it to enable this check)" >&2
   exit 0
 fi
-terms="$(grep -v '^[[:space:]]*#' "$list" | sed '/^[[:space:]]*$/d' || true)"
+terms="$(tr -d '\r' <"$list" | grep -v '^[[:space:]]*#' | sed '/^[[:space:]]*$/d' || true)"
 [[ -z "$terms" ]] && exit 0
 
+# Added lines only: skip the per-file headers (+++ b/path) but keep content
+# lines that happen to start with "++".
+added() { awk '/^diff --git /{h=0} /^@@/{h=1; next} h && /^\+/'; }
+
 case "${1:-}" in
-  --staged) text="$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' || true)" ;;
+  --staged) text="$(git var GIT_AUTHOR_IDENT; git var GIT_COMMITTER_IDENT
+                    git diff --cached --name-only
+                    git diff --cached -U0 --no-color | added)" ;;
   --file)   text="$(cat "$2")" ;;
-  --range)  text="$(git log --format='%an <%ae>%n%cn <%ce>%n%B' "$2"; git diff -U0 --no-color "$2" | grep '^+' || true)" ;;
+  --range)  text="$(git log --format='%an <%ae>%n%cn <%ce>%n%B' "$2"
+                    git diff --name-only "$2"
+                    git diff -U0 --no-color "$2" | added)" ;;
   *) echo "usage: $0 --staged | --file PATH | --range A..B" >&2; exit 2 ;;
 esac
 
