@@ -172,7 +172,10 @@ rules. The trade-offs are accepted deliberately:
 
 Long strings are memoized because history is resent on every turn. The cache
 is invalidated whenever the set of known values changes, so a newly learned
-value is never missed.
+value is never missed. A result is cached only under the version of the known
+values it was computed with: when a concurrent request learns a value while a
+string is being masked, the result is not cached under the newer version, and
+the next turn masks the string again with the value included.
 
 ## Placeholders
 
