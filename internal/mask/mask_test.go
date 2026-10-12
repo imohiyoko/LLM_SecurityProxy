@@ -147,3 +147,18 @@ func TestIDsReportIssuedPlaceholders(t *testing.T) {
 		}
 	}
 }
+
+// A 19-digit card overlaps the 16-digit reading of its first groups; the
+// whole card is masked, not just its prefix.
+func TestNineteenDigitCardMaskedWhole(t *testing.T) {
+	m, _ := newMasker(t)
+	card := "6011" + " 0000 0000 0000 001"
+	out, err := m.String("card "+card+" exp 12/29", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := regexp.MustCompile(`^card ` + placeholder.Pattern.String() + ` exp 12/29$`)
+	if !want.MatchString(out) {
+		t.Errorf("got %q, want the card replaced by one placeholder", out)
+	}
+}
