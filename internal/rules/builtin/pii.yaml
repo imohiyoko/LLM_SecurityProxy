@@ -14,6 +14,10 @@ rules:
 
   - id: credit_card
     kind: CREDIT_CARD
-    pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011|65\d{2}|30[0-5]\d|3[689]\d{2})(?:[ -]?\d){9,15}\b'
-    # 13-19 digits; luhn checks the length and the checksum.
+    # 13-19 digits, contiguous or grouped 4-4-4-x or 4-6-x
+    # (Amex, Diners), one separator throughout. Each layout has a fixed number
+    # of groups so that a trailing expiry or CVV ("<card> 12/29", "<card> 123")
+    # is not absorbed: the longer match would fail luhn and the card would not
+    # be masked at all. luhn checks the length and the checksum.
+    pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011|65\d{2}|30[0-5]\d|3[689]\d{2})(?:\d{9,15}|(?: \d{4}){2} \d{1,7}|(?:-\d{4}){2}-\d{1,7}| \d{6} \d{3,9}|-\d{6}-\d{3,9})\b'
     validators: [luhn]
