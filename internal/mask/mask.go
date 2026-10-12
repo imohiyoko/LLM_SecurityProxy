@@ -41,6 +41,8 @@ type Masker struct {
 	mu           sync.Mutex
 	cache        map[cacheKey]cached
 	cacheVersion uint64
+
+	afterMask func() // test hook: runs between masking and caching
 }
 
 // cacheKey: a value masked as a field (Field with a matching rule) is cached
@@ -98,11 +100,9 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 
 	if len(s) >= cacheMinLen {
 		m.mu.Lock()
-		if m.cacheVersion != version {
-			m.cache = map[cacheKey]cached{}
-			m.cacheVersion = version
-		}
+		m.syncCache(version)
 		c, ok := m.cache[ck]
+		ok = ok && m.cacheVersion == version
 		m.mu.Unlock()
 		if ok {
 			for k, n := range c.stats {
@@ -124,22 +124,35 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 	}
 	addIDs(ids, issued)
 
+	if m.afterMask != nil {
+		m.afterMask()
+	}
 	if len(s) >= cacheMinLen {
-		// Masking may have stored new values; only cache against the version
-		// that includes them, otherwise the next lookup recomputes anyway.
-		_, after := m.store.Known()
+		// out was computed with the known values of version, so it may only be
+		// cached under version. Values stored since then, by this call or by
+		// a concurrent one, are not in out; a later lookup under the newer
+		// version must recompute.
 		m.mu.Lock()
-		if m.cacheVersion != after {
-			m.cache = map[cacheKey]cached{}
-			m.cacheVersion = after
+		m.syncCache(version)
+		if m.cacheVersion == version {
+			if len(m.cache) >= cacheMaxEntries {
+				m.cache = map[cacheKey]cached{}
+			}
+			m.cache[ck] = cached{out: out, stats: local, ids: issued}
 		}
-		if len(m.cache) >= cacheMaxEntries {
-			m.cache = map[cacheKey]cached{}
-		}
-		m.cache[ck] = cached{out: out, stats: local, ids: issued}
 		m.mu.Unlock()
 	}
 	return out, nil
+}
+
+// syncCache drops the cache when version is newer than the one it holds.
+// An older version leaves it alone: that call's snapshot is stale, and the
+// cache is not rolled back for it. mu must be held.
+func (m *Masker) syncCache(version uint64) {
+	if version > m.cacheVersion {
+		m.cache = map[cacheKey]cached{}
+		m.cacheVersion = version
+	}
 }
 
 func addIDs(ids IDs, add []string) {

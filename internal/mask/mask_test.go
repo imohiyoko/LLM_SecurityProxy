@@ -3,6 +3,7 @@ package mask
 import (
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
@@ -98,6 +99,42 @@ func TestCacheSeesNewKnownValues(t *testing.T) {
 	out, _ := m.String(long, Stats{}, nil)
 	if strings.Contains(out, "N3wSecret!xyz") {
 		t.Fatal("stale cache leaked a newly known value")
+	}
+}
+
+// A value learned by a concurrent request while a string is being masked is
+// not hidden by the cache on the next turn (#34).
+func TestCacheIgnoresValueLearnedDuringMask(t *testing.T) {
+	m, _ := newMasker(t)
+	long := strings.Repeat("filler text ", 40) + `const p = "N3wSecret!xyz"`
+	other := New(m.det, m.store, nil)
+	m.afterMask = func() {
+		m.afterMask = nil
+		other.String(`password: "N3wSecret!xyz"`, Stats{}, nil)
+	}
+	if out, _ := m.String(long, Stats{}, nil); out != long {
+		t.Fatalf("unexpected masking: %s", out)
+	}
+	for turn := 1; turn <= 3; turn++ {
+		if out, _ := m.String(long, Stats{}, nil); strings.Contains(out, "N3wSecret!xyz") {
+			t.Fatalf("turn %d: cache leaked a value learned concurrently: %s", turn, out)
+		}
+	}
+}
+
+// Concurrent calls never leave a cached result that misses a known value.
+func TestCacheConcurrentLearn(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		m, _ := newMasker(t)
+		long := strings.Repeat("filler text ", 40) + `const p = "N3wSecret!xyz"`
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); m.String(`password: "N3wSecret!xyz"`, Stats{}, nil) }()
+		go func() { defer wg.Done(); m.String(long, Stats{}, nil) }()
+		wg.Wait()
+		if out, _ := m.String(long, Stats{}, nil); strings.Contains(out, "N3wSecret!xyz") {
+			t.Fatalf("run %d: cache leaked a value learned concurrently", i)
+		}
 	}
 }
 
