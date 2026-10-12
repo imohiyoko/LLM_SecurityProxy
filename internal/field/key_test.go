@@ -39,13 +39,14 @@ func TestKeySet(t *testing.T) {
 		"userName", "user_name", "user-name", "USER_NAME", "user.name", "UserName",
 		"display_name", "DISPLAY-NAME", "fullName", "full_name",
 		"self.user_name", "profile.displayName", "a.b.FULL_NAME",
+		"username", "USERNAME", "displayname", "DISPLAYNAME", "fullname",
 	} {
 		if !ks.Match(name) {
 			t.Errorf("Match(%q) = false", name)
 		}
 	}
 	for _, name := range []string{
-		"name", "user", "username", "billing_user_name", "userNameKana",
+		"name", "user", "billing_user_name", "billingusername", "userNameKana",
 		"user_name_length", "display", "user.name.kana", "",
 	} {
 		if ks.Match(name) {

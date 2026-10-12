@@ -217,3 +217,80 @@ func TestFieldByKey(t *testing.T) {
 		t.Errorf("fallback did not mask: %s", out)
 	}
 }
+
+// A field value that runs into a secret, or stops inside one, never takes the
+// secret's place: the secret is masked whole, and what is left of the field
+// value is masked as NAME around it.
+func TestFieldValueDoesNotHideSecrets(t *testing.T) {
+	pw := "Zx=9Kq2Lm7Pw"
+	for _, c := range []struct{ in, secret string }{
+		{"display_name: Deploy via https://deploy:" + pw + "@10.0.0.5/repo", pw},
+		{"username: svc pwd:Hq)8vT2nW4rZ", "Hq)8vT2nW4rZ"},
+		{"nickname: ops " + testsecret.PrivateKey(), testsecret.PrivateKey()},
+		{"display_name: Jane " + testsecret.GitHubToken(), testsecret.GitHubToken()},
+	} {
+		m, st := newMasker(t)
+		out, err := m.String(c.in, Stats{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range []string{c.secret, c.secret[len(c.secret)/2:]} {
+			if strings.Contains(out, part) {
+				t.Errorf("%q: secret leaked: %s", c.in, out)
+			}
+		}
+		if back, _ := unmask.Replace(out, st, unmask.Identity); back != c.in {
+			t.Errorf("round trip: %q", back)
+		}
+	}
+}
+
+// An allowlisted span is dropped before overlaps are resolved, so it cannot
+// shield a secret inside it.
+func TestAllowedSpanDoesNotShieldSecret(t *testing.T) {
+	m, _ := newMasker(t, `@users\.noreply\.github\.com$`, `example\.com`)
+	tok := testsecret.GitHubToken()
+	for _, in := range []string{
+		"author_name: Jane Doe <" + tok + "> 1+jd@users.noreply.github.com",
+		`{"full_name": "Jane <jane@example.com> key ` + testsecret.AnthropicKey() + `"}`,
+	} {
+		out, _ := m.String(in, Stats{}, nil)
+		if strings.Contains(out, tok) || strings.Contains(out, testsecret.AnthropicKey()) {
+			t.Errorf("secret leaked: %s", out)
+		}
+	}
+	out, _ := m.Field("display_name", "Jane "+tok+" jd@example.com", Stats{}, nil)
+	if strings.Contains(out, tok) {
+		t.Errorf("Field: secret leaked: %s", out)
+	}
+}
+
+// A placeholder inside a field value is kept, and the name next to it is
+// still masked.
+func TestFieldValueAroundPlaceholder(t *testing.T) {
+	m, _ := newMasker(t)
+	first, _ := m.String("mail bob@corp.dev", Stats{}, nil)
+	ph := placeholder.Pattern.FindString(first)
+	out, _ := m.String(`display_name: "Jane Doe `+ph+`"`, Stats{}, nil)
+	if strings.Contains(out, "Jane") || !strings.Contains(out, ph) {
+		t.Fatalf("got %s", out)
+	}
+}
+
+// A name with JSON escapes is masked in pieces, so that it restores without
+// extra backslashes, and is learned unescaped for the known-value pass.
+func TestEscapedFieldValue(t *testing.T) {
+	m, st := newMasker(t)
+	in := `{"displayName": "Jane \"JD\" Doe"}`
+	out, _ := m.String(in, Stats{}, nil)
+	if strings.Contains(out, "Jane") || strings.Contains(out, "Doe") {
+		t.Fatalf("not masked: %s", out)
+	}
+	if back, _ := unmask.Replace(out, st, unmask.Identity); back != in {
+		t.Fatalf("round trip: %q", back)
+	}
+	later, _ := m.String(`Jane "JD" Doe joined`, Stats{}, nil)
+	if strings.Contains(later, "Jane") {
+		t.Fatalf("decoded name not known: %s", later)
+	}
+}

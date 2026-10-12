@@ -250,6 +250,23 @@ func TestBuiltinName(t *testing.T) {
 		{`:full_name => "Jane Doe"`, "Jane Doe"},
 		{"lastName: 山田\n", "山田"},
 		{`FAMILY-NAME=Doe`, "Doe"},
+		// Names that contain user / name, or equal an account word in
+		// another case.
+		{`last_name: Hauser`, "Hauser"},
+		{`family_name: Namekawa`, "Namekawa"},
+		{`last_name: Root`, "Root"},
+		// One-word spellings, labels, flags, XML, headers' X- form aside.
+		{`displayname=Jane`, "Jane"},
+		{`GIVENNAME=Jane`, "Jane"},
+		{"Full Name: Jane Doe\n", "Jane Doe"},
+		{`--display-name="Jane Doe"`, "Jane Doe"},
+		{`$row['last_name'] = 'Doe';`, "Doe"},
+		{`<first_name>Jane</first_name>`, "Jane"},
+		{"氏名：山田太郎\n", "山田太郎"},
+		{`-e "FULL_NAME=Jane Doe"`, "Jane Doe"},
+		{"last_name: O'Brien\n", "O'Brien"},
+		{`user_name= display_name="Jane Doe"`, "Jane Doe"},
+		{`first_name = u'Jane'`, "Jane"},
 	} {
 		if got := found(d, c.text)[rule]; got != c.want {
 			t.Errorf("%q: got %q, want %q", c.text, got, c.want)
@@ -262,6 +279,8 @@ func TestBuiltinName(t *testing.T) {
 		`billing_user_name: Acme Corp`,
 		`userNameKana: ジェーン`,
 		`username: root`,
+		`username=postgres`,
+		`user_name: ec2-user`,
 		`user_name: null`,
 		`display_name: ""`,
 		`user_name: 12345`,
@@ -291,6 +310,17 @@ rules:
     allow: ['^0+$']
 `)
 	d := detector(t, []string{dir}, Selection{})
+	// Code is skipped for every field rule, not only the builtin one.
+	for _, text := range []string{
+		`customer_code = lookup(order)`,
+		`customer_code: ${CODE}`,
+		`customer_code = prefix + suffix`,
+		`customerCode: string;`,
+	} {
+		if got := found(d, text); len(got) != 0 {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
 	got := found(d, `{"customerCode": "C-1029 east"} CLIENT_ID=0000`)
 	if got["org/fields:customer"] != "C-1029 east" {
 		t.Errorf("keys: %v", got)

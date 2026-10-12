@@ -420,9 +420,12 @@ func TestFieldNameMaskedEndToEnd(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"content":[{"type":"text","text":"created %s"}]}`, ph)
 	})
-	resp, err := http.Post(f.proxy.URL+"/v1/messages?user_name=Jane%20Roe", "application/json", strings.NewReader(
+	req, _ := http.NewRequest(http.MethodPost, f.proxy.URL+"/v1/messages?user_name=Jane%20Roe", strings.NewReader(
 		`{"model":"m","messages":[{"role":"assistant","content":[`+
 			`{"type":"tool_use","id":"tu_1","name":"crm","input":{"contact":{"displayName":"Jane Doe","plan":"pro"}}}]}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Name", "Joan Poe")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,6 +438,9 @@ func TestFieldNameMaskedEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(r.URL.RawQuery, "Jane") || strings.Contains(r.URL.RawQuery, "Roe") {
 		t.Fatalf("query field not masked: %s", r.URL.RawQuery)
+	}
+	if h := r.Header.Get("X-User-Name"); !strings.HasPrefix(h, "__LLMSP_NAME_") {
+		t.Fatalf("header field not masked: %s", h)
 	}
 	if !strings.Contains(string(out), "created Jane Doe") {
 		t.Fatalf("not restored: %s", out)

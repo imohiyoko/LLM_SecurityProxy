@@ -35,26 +35,22 @@ rules:
     kind: NAME
     description: >
       Whole value of a field that holds a person's name, in JSON, YAML,
-      logfmt, env, code and logs (userName: ..., "display_name": "...",
-      FULL_NAME='...'), quoted values with spaces included. The field name
-      must be one of the keys once normalised (userName = user_name =
-      USER-NAME); a longer name (billing_user_name) or a bare name / user /
-      login does not match. Add your own field names with a `keys:` rule.
+      logfmt, env, code, XML and logs (userName: ..., "display_name": "...",
+      FULL_NAME='...', Full Name: ...), quoted values with spaces included.
+      The field name must be one of the keys once normalised, with or without
+      word breaks (userName = user_name = USERNAME); a longer name
+      (billing_user_name) or a bare name / user / login does not match. Add
+      your own field names with a `keys:` rule.
     keys:
       - user_name
-      - username
       - full_name
-      - fullname
       - display_name
       - first_name
-      - firstname
       - last_name
-      - lastname
       - middle_name
       - family_name
       - given_name
       - nickname
-      - nick_name
       - real_name
       - first_name_kana
       - last_name_kana
@@ -63,13 +59,21 @@ rules:
       - contact_name
       - employee_name
       - author_name
-    # Each entry matches the whole value.
+      - 氏名
+    # Each entry matches the whole value. Calls, templates, expressions and
+    # type annotations are already skipped by the field scanner.
     allow:
-      - '__LLMSP_'                                                           # already masked
+      - '^__LLMSP_[A-Z0-9_]{1,32}?_[0-9a-f]{12}__$'                           # already masked
       - '^[^\pL]*$'                                                          # no letters: ids, dates, "-"
-      - '(?i)^(?:true|false|yes|no|null|nil|none|undefined|unknown|n/?a|tbd|empty|anonymous|anon|guest|admin|administrator|root|system|test|user|default|nobody|me)$'
-      - '(?i)^[\w.$@:>-]*(?:name|user)[\w.$@:>-]*$'                           # a reference, not a name: first_name, user.name, $userName
-      - '(?i)^(?:str|string|int|integer|bool|boolean|any|object|text|char|varchar|nvarchar)(?:\(\d+\)|\[\]|\?)?$' # type annotation
-      - '^[A-Za-z_$][\w$.]*[(\[]'                                             # call or index: getName(), Optional[str
-      - '^(?:[$#]\{|\{\{|\{[A-Za-z_][\w.]*\}$|%\([\w.]+\)[sdr]$|\$[A-Za-z_]\w*$)' # ${X}, #{x}, {{ .Name }}, {name}, %(name)s, $X
+      # Placeholder words and system or service accounts. Lower case (and the
+      # usual spellings of constants) only, so Root, Guest or Test as a name
+      # is still masked.
+      - '^(?:true|false|True|False|TRUE|FALSE|yes|no|null|Null|NULL|nil|None|none|undefined|unknown|n/?a|N/?A|tbd|TBD|empty|anonymous|anon|guest|admin|administrator|root|system|test|user|username|Username|name|default|nobody|me|postgres|mysql|ubuntu|ec2-user|www-data|nginx|git|jenkins|runner|deploy)$'
+      # A reference to another field, not a name: first_name, user.name,
+      # $userName, currentUser. It must contain name or user and have the
+      # shape of an identifier (a separator or a camelCase hump), so that
+      # Hauser or Namekawa is still masked.
+      - '^(?:[\w$@:>-]*[_.$@:>-][\w.$@:>-]*(?i:name|user)[\w.$@:>-]*|[\w.$@:>-]*(?i:name|user)[\w.$@:>-]*[_.$@:>-][\w.$@:>-]*|[a-z]\w*(?:Name|User)\w*|(?:name|user)[A-Z]\w*)$'
+      - '^(?:[$#]\{.*\}|\{\{.*\}\}|%\([\w.]+\)[sdr])$'                        # a quoted template: "{{ .Name }}", "${NAME}"
+      - '^(?:str|string|String|int|integer|bool|boolean|any|object|text|char|varchar|nvarchar)(?:\(\d+\)|\[\]|\?)?$' # a quoted type name
       - '(?i)^(?:x+|\*+|\.+|<[^>]*>|\[[^\]]*\]|changeme|placeholder|redacted|your[_ -].*)$'

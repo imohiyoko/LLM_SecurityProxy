@@ -201,8 +201,13 @@ func (s *Server) maskHeader(h http.Header, stats mask.Stats, ids mask.IDs) error
 		if slices.ContainsFunc(s.AuthHeaders, func(a string) bool { return strings.EqualFold(a, k) }) {
 			continue
 		}
+		// X-User-Name names the same field as User-Name.
+		name := k
+		if len(name) > 2 && strings.EqualFold(name[:2], "X-") {
+			name = name[2:]
+		}
 		for i, v := range vs {
-			out, err := s.Masker.Field(k, v, stats, ids)
+			out, err := s.Masker.Field(name, v, stats, ids)
 			if err != nil {
 				return err
 			}

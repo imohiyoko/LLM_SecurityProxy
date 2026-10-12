@@ -15,6 +15,9 @@ type Match struct {
 	Kind       string
 	// Rule is the full ID of the rule that matched, e.g. "builtin/pii:email".
 	Rule string
+	// Field is set for a field rule match: the whole value of a field, which
+	// may contain other matches. Callers give it the lowest priority.
+	Field bool
 }
 
 // Rule is a single compiled detector.
@@ -63,8 +66,9 @@ func (d *Detector) Find(s string) []Match {
 				fields, scanned = field.Find(s), true
 			}
 			for _, f := range fields {
-				if r.Keys.Match(f.Name) && r.accepts(s[f.Start:f.End]) {
-					out = append(out, Match{Start: f.Start, End: f.End, Kind: r.Kind, Rule: r.ID})
+				if m, ok := r.field(f.Key, s[f.Start:f.End]); ok {
+					m.Start, m.End = f.Start, f.End
+					out = append(out, m)
 				}
 			}
 			continue
@@ -96,13 +100,23 @@ func (d *Detector) Field(key, value string) []Match {
 	if value == "" {
 		return nil
 	}
+	k := field.NewKey(key)
 	var out []Match
 	for _, r := range d.rules {
-		if r.Keys != nil && r.Keys.Match(key) && r.accepts(value) {
-			out = append(out, Match{Start: 0, End: len(value), Kind: r.Kind, Rule: r.ID})
+		if m, ok := r.field(k, value); ok {
+			out = append(out, m)
 		}
 	}
 	return out
+}
+
+// field matches value as the value of a field with key k: the whole value,
+// from 0 to len(value).
+func (r *Rule) field(k field.Key, value string) (Match, bool) {
+	if r.Keys == nil || !r.Keys.Has(k) || !r.accepts(value) {
+		return Match{}, false
+	}
+	return Match{End: len(value), Kind: r.Kind, Rule: r.ID, Field: true}, true
 }
 
 func (r *Rule) accepts(v string) bool {
