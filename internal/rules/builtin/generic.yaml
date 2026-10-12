@@ -24,13 +24,14 @@ rules:
     kind: SECRET
     description: >
       Value assigned to a password / secret / api_key / token style name with
-      =, :, := or => (shell, YAML, JSON, Go, PHP, Ruby). The value stops at a
-      quote or whitespace. It may contain , and ; but ends before one that is
-      followed by another `name=`, so a connection string
+      =, :, := or => (shell, YAML, JSON, Go, PHP, Ruby). A quoted value runs to
+      the matching closing quote (backslash escapes allowed). An unquoted
+      value stops at whitespace or a quote; it may contain , and ; but ends
+      before one that is followed by another `name=`, so a connection string
       (Password=...;Database=...) or a list of assignments is split. A bare
       word is masked: it cannot be told apart from a letters-only passphrase.
-    pattern: '(?i)(?:page[_-]?token\b["'']?\s*(?::=|=>|[:=])|(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']?\s*(?::=|=>|[:=])\s*["'']?\d+(?:[\s"''`,;)\]}]|$)|(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`,;]+(?:[,;][^\s"''`,;=]+)*)(?:[\s"''`,;]|$))'
-    group: 1
+    pattern: '(?i)(?:page[_-]?token\b["'']?\s*(?::=|=>|[:=])|(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']?\s*(?::=|=>|[:=])\s*["'']?\d+(?:[\s"''`,;)\]}]|$)|(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*(?:"((?:[^"\\\n]|\\.)+)"|''((?:[^''\\\n]|\\.)+)''|["'']?([^\s"''`,;]+(?:[,;][^\s"''`,;=]+)*)(?:[\s"''`,;]|$)))'
+    groups: [1, 2, 3]
     allow: &code_values
       - '__LLMSP_'                                                           # already masked
       - '^.{0,7}$'                                                           # too short
@@ -58,6 +59,6 @@ rules:
   - id: php_define
     kind: SECRET
     description: PHP constant with a password / secret style name (define('DB_PASSWORD', '...')).
-    pattern: '(?i)(?:\bdefine\s*\(\s*["''][\w.-]*?(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']\s*,\s*["'']\d+["'']|\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["''])'
-    group: 1
+    pattern: '(?i)(?:\bdefine\s*\(\s*["''][\w.-]*?(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']\s*,\s*["'']\d+["'']|\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*(?:"((?:[^"\\]|\\.){8,})"|''((?:[^''\\]|\\.){8,})''))'
+    groups: [1, 2]
     allow: *code_values

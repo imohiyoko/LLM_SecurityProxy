@@ -207,6 +207,9 @@ func TestInvalidRulesets(t *testing.T) {
 		"neither":           "id: a/b\nrules:\n  - {id: r, kind: K}\n",
 		"bad regexp":        "id: a/b\nrules:\n  - {id: r, kind: K, pattern: '(?<=x)'}\n",
 		"group range":       "id: a/b\nrules:\n  - {id: r, kind: K, pattern: '(x)', group: 2}\n",
+		"groups range":      "id: a/b\nrules:\n  - {id: r, kind: K, pattern: '(x)|(y)', groups: [1, 3]}\n",
+		"group and groups":  "id: a/b\nrules:\n  - {id: r, kind: K, pattern: '(x)|(y)', group: 1, groups: [2]}\n",
+		"groups no pattern": "id: a/b\nrules:\n  - {id: r, kind: K, values: [x], groups: [1]}\n",
 		"unknown validator": "id: a/b\nrules:\n  - {id: r, kind: K, pattern: x, validators: [nope]}\n",
 	}
 	for name, body := range cases {

@@ -54,6 +54,7 @@ rules:
     kind: PROJECT
     pattern: '...'            # RE2; exactly one of pattern / values
     group: 1                  # mask one capture group only
+    # groups: [1, 2]          # or: the first of these groups that matched
     allow: ['...']            # values matching these are not masked
     validators: [luhn]        # named checks a regexp cannot express
     enabled: true

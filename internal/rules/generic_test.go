@@ -41,6 +41,7 @@ func TestGenericForms(t *testing.T) {
 		{"builtin/credentials:authorization", "Authorization: Bearer <v>", v},
 		{"builtin/credentials:authorization", `curl -H 'Authorization: Basic ` + b64 + `'`, b64},
 		{"builtin/credentials:authorization", `"authorization": "token <v>"`, v},
+		{"builtin/credentials:authorization", "Authorization: Basic YTpi", "YTpi"},
 
 		// Symbols in values (#15).
 		{"builtin/generic:assignment", "password=Fake{Pw}Value9", "Fake{Pw}Value9"},
@@ -59,6 +60,14 @@ func TestGenericForms(t *testing.T) {
 		{"builtin/generic:assignment", "password=TOKENAUTHPASS", "TOKENAUTHPASS"},
 		{"builtin/generic:assignment", "password=83749201", "83749201"},
 		{"builtin/generic:assignment", "auth_token=83749201", "83749201"},
+
+		// A quoted value runs to its matching closing quote.
+		{"builtin/generic:assignment", `password="AlphaBeta;mode=Gamma99"`, "AlphaBeta;mode=Gamma99"},
+		{"builtin/generic:assignment", `password = "Alpha Beta Gamma99"`, "Alpha Beta Gamma99"},
+		{"builtin/generic:assignment", `password: 'Alpha"Beta Gamma99'`, `Alpha"Beta Gamma99`},
+		{"builtin/generic:assignment", `"password": "Alpha\"Beta99", "user": "bob"`, `Alpha\"Beta99`},
+		{"builtin/generic:php_define", `define('DB_PASSWORD', "AlphaBeta'Gamma99")`, "AlphaBeta'Gamma99"},
+		{"builtin/generic:php_define", `define('DB_PASSWORD', 'Alpha"Beta Gamma99')`, `Alpha"Beta Gamma99`},
 
 		// A skipped value does not swallow the next assignment.
 		{"builtin/generic:assignment", "password=__LLMSP_SECRET_" + "0123456789ab" + "__;api_key=<v>", v},
