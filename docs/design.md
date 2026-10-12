@@ -26,6 +26,10 @@ extra CA bundle for TLS-inspecting proxies.
    - Protocol fields (`type`, `id`, `tool_use_id`, `signature`, base64 `data`,
      ...) are skipped, but only at the protocol level. Everything inside tool
      arguments (`input`, `arguments`) is content, whatever its keys are called.
+     Object keys inside tool arguments are masked too: streamed tool input is
+     restored as raw JSON, keys included, and comes back as history on the
+     next turn. A masked key that would collide with another key of the same
+     object is rejected (400) rather than dropping a member.
    - Plain-text document sources (`media_type: text/*`) are content.
    - `thinking` / `redacted_thinking` blocks are passed through byte for byte:
      they are signed and editing them makes the API reject the request.
@@ -112,7 +116,9 @@ value is never missed.
 
 ## Response path
 
-- `application/json`: walk and restore placeholders (thinking blocks excluded).
+- `application/json`: walk and restore placeholders (thinking blocks excluded),
+  including object keys inside tool input, as the streaming path does. A
+  restored key that would collide with another key is left as a placeholder.
 - `text/event-stream`: parse events; per content block, run a stream unmasker.
   - `text_delta`: restore as is.
   - `input_json_delta`: the text is a fragment of JSON source, so restored

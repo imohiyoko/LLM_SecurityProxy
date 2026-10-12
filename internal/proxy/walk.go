@@ -1,6 +1,11 @@
 package proxy
 
-import "strings"
+import (
+	"errors"
+	"maps"
+	"slices"
+	"strings"
+)
 
 // skipKeys hold protocol fields, not conversation content. Masking them would
 // break the request (IDs, signatures) or waste work (base64 media). They are
@@ -39,18 +44,32 @@ func opaqueBlock(m map[string]any) bool {
 	return false
 }
 
-// walkStrings applies fn to every content string in v, in place.
+// walkStrings applies fn to every content string in v, in place. Object keys
+// inside tool arguments are content too: a streamed tool input is restored as
+// raw JSON, keys included, so the request side must mask them as well or a
+// restored key would be resent upstream in plaintext on the next turn.
+//
+// If a rewritten key would collide with another key of the same object, the
+// key is kept as it was, so no member is dropped.
 func walkStrings(v any, fn func(string) (string, error)) (any, error) {
-	return walk(v, fn, false)
+	return walk(v, fn, false, false)
 }
 
-func walk(v any, fn func(string) (string, error), free bool) (any, error) {
+// maskStrings is walkStrings for the request side: a key collision is an
+// error, so a key that should be masked is never forwarded as is.
+func maskStrings(v any, fn func(string) (string, error)) (any, error) {
+	return walk(v, fn, false, true)
+}
+
+var errKeyCollision = errors.New("proxy: masked object key collides with another key")
+
+func walk(v any, fn func(string) (string, error), free, strict bool) (any, error) {
 	switch t := v.(type) {
 	case string:
 		return fn(t)
 	case []any:
 		for i, e := range t {
-			nv, err := walk(e, fn, free)
+			nv, err := walk(e, fn, free, strict)
 			if err != nil {
 				return nil, err
 			}
@@ -65,16 +84,57 @@ func walk(v any, fn func(string) (string, error), free bool) (any, error) {
 			if !free && skipKeys[k] && !textData(k, t) {
 				continue
 			}
-			nv, err := walk(e, fn, free || freeKeys[k])
+			nv, err := walk(e, fn, free || freeKeys[k], strict)
 			if err != nil {
 				return nil, err
 			}
 			t[k] = nv
 		}
+		if free {
+			if err := rekey(t, fn, strict); err != nil {
+				return nil, err
+			}
+		}
 		return t, nil
 	default:
 		return v, nil
 	}
+}
+
+// rekey applies fn to the keys of m. Keys are visited in sorted order, and a
+// new key may not take the name of any original key or of an earlier
+// rewritten one, so the result does not depend on map iteration order.
+func rekey(m map[string]any, fn func(string) (string, error), strict bool) error {
+	keys := slices.Sorted(maps.Keys(m))
+	taken := map[string]bool{}
+	type move struct{ from, to string }
+	var moves []move
+	for _, k := range keys {
+		nk, err := fn(k)
+		if err != nil {
+			return err
+		}
+		if nk == k {
+			continue
+		}
+		if _, orig := m[nk]; orig || taken[nk] {
+			if strict {
+				return errKeyCollision
+			}
+			continue
+		}
+		taken[nk] = true
+		moves = append(moves, move{k, nk})
+	}
+	vals := make([]any, len(moves))
+	for i, mv := range moves {
+		vals[i] = m[mv.from]
+		delete(m, mv.from)
+	}
+	for i, mv := range moves {
+		m[mv.to] = vals[i]
+	}
+	return nil
 }
 
 // textData reports a plain-text document source ({"media_type":"text/plain",

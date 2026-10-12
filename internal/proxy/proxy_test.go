@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -298,5 +299,130 @@ func TestQueryUnchangedIsVerbatim(t *testing.T) {
 	<-f.received
 	if up := <-f.requests; up.URL.RawQuery != "b=2&a=1" {
 		t.Fatalf("query rewritten: %q", up.URL.RawQuery)
+	}
+}
+
+// A placeholder the model writes as an object key in a streamed tool input is
+// restored to the real value. When the client resends that tool_use as
+// history, the key must be masked again before it goes upstream (#19).
+func TestToolInputKeysMaskedAfterStreamRestore(t *testing.T) {
+	secret := testsecret.AWSAccessKey()
+	turn := 0
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		turn++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turn > 1 {
+			return
+		}
+		ph := placeholder.Pattern.FindString(string(body))
+		partial, _ := json.Marshal(`{"env": {"` + ph + `": "1"}}`)
+		for _, e := range []string{
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"bash","input":{}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":` + string(partial) + `}}`,
+			`{"type":"content_block_stop","index":0}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	})
+
+	resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"use `+secret+`"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	<-f.received
+
+	var partial strings.Builder
+	for _, block := range strings.Split(string(out), "\n\n") {
+		_, data, ok := strings.Cut(block, "data: ")
+		if !ok {
+			continue
+		}
+		var ev struct {
+			Delta struct {
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		json.Unmarshal([]byte(data), &ev)
+		partial.WriteString(ev.Delta.PartialJSON)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(partial.String()), &input); err != nil {
+		t.Fatalf("tool input %q: %v", partial.String(), err)
+	}
+	if _, ok := input["env"].(map[string]any)[secret]; !ok {
+		t.Fatalf("key not restored for the client: %v", input)
+	}
+
+	// Turn 2: the client resends the tool_use with the restored key.
+	inputJSON, _ := json.Marshal(input)
+	resp, err = http.Post(f.proxy.URL+"/v1/messages", "application/json", strings.NewReader(
+		`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[`+
+			`{"type":"tool_use","id":"tu_1","name":"bash","input":`+string(inputJSON)+`}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if sent := string(<-f.received); strings.Contains(sent, secret) || !strings.Contains(sent, `{"__LLMSP_AWS_ACCESS_KEY_`) {
+		t.Fatalf("restored key reached upstream unmasked: %s", sent)
+	}
+}
+
+// Keys inside tool arguments are content; protocol keys are not rewritten.
+func TestToolInputKeysMasked(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		// Echo the tool input back, as a model would when repeating it.
+		var req struct {
+			Messages []struct {
+				Content []map[string]any `json:"content"`
+			} `json:"messages"`
+		}
+		json.Unmarshal(body, &req)
+		in, _ := json.Marshal(req.Messages[0].Content[0]["input"])
+		fmt.Fprintf(w, `{"content":[{"type":"tool_use","id":"tu_2","name":"bash","input":%s}]}`, in)
+	})
+	secret := testsecret.GitHubToken()
+	resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json", strings.NewReader(
+		`{"model":"m","messages":[{"role":"assistant","content":[`+
+			`{"type":"tool_use","id":"tu_1","name":"bash","input":{"headers":{"`+secret+`":"x","plain":"y"}}}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	sent := string(<-f.received)
+	if strings.Contains(sent, secret) || !strings.Contains(sent, `"plain":"y"`) || !strings.Contains(sent, `"headers":{"__LLMSP_GITHUB_TOKEN_`) {
+		t.Fatalf("tool input key not masked: %s", sent)
+	}
+
+	// The non-streaming response restores keys the same way.
+	var got struct {
+		Content []struct {
+			Input map[string]map[string]string `json:"input"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if h := got.Content[0].Input["headers"]; h[secret] != "x" || h["plain"] != "y" {
+		t.Fatalf("key not restored: %s", out)
+	}
+}
+
+func TestRekeyCollision(t *testing.T) {
+	upper := func(s string) (string, error) { return strings.ToUpper(s), nil }
+	m := map[string]any{"a": 1, "A": 2, "b": 3}
+	if err := rekey(m, upper, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 3 || m["a"] != 1 || m["A"] != 2 || m["B"] != 3 {
+		t.Fatalf("lenient rekey: %v", m)
+	}
+	m = map[string]any{"x": 1, "X": 2}
+	if err := rekey(m, upper, true); !errors.Is(err, errKeyCollision) {
+		t.Fatalf("strict rekey: %v %v", err, m)
 	}
 }

@@ -180,7 +180,10 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, err
 		return nil, nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be a single JSON value"}
 	}
 
-	doc, err = walkStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats, ids) })
+	doc, err = maskStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats, ids) })
+	if errors.Is(err, errKeyCollision) {
+		return nil, nil, nil, &httpError{http.StatusBadRequest, "llmsp: a masked object key collides with another key"}
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
