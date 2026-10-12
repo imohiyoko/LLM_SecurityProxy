@@ -41,9 +41,9 @@ addressed as `<ruleset id>:<rule id>`, e.g. `builtin/pii:email`.
 
 | Ruleset | Default | Contents |
 |---|---|---|
-| `builtin/credentials` | on | private keys (PEM, PGP), AWS keys, GitHub / GitLab / Slack (incl. app-level) / Anthropic / OpenAI / Google / Stripe / npm tokens, Slack webhooks, JWTs, passwords in URLs (`scheme://user:pass@host`) |
+| `builtin/credentials` | on | private keys (PEM, PGP), AWS keys, GitHub / GitLab / Slack (incl. app-level) / Anthropic / OpenAI / Google / Stripe / npm tokens, Slack webhooks, JWTs, passwords in URLs (`scheme://user:pass@host`), `Authorization` header credentials |
 | `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked) |
-| `builtin/generic` | on | `password=` / `api_key:` style assignments |
+| `builtin/generic` | on | `password=` / `api_key:` / `HF_TOKEN=` style assignments (also `:=`, `=>`, XML elements, PHP `define()`) |
 | `builtin/network` | off | IPv4 addresses |
 
 Add your own rulesets as `*.yaml` files in `rules.d/` next to your config (see

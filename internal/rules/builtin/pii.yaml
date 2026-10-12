@@ -14,6 +14,19 @@ rules:
 
   - id: credit_card
     kind: CREDIT_CARD
-    pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011|65\d{2}|30[0-5]\d|3[689]\d{2})(?:[ -]?\d){9,15}\b'
-    # 13-19 digits; luhn checks the length and the checksum.
+    # 13-19 digits, contiguous or grouped 4-4-4-x or 4-6-x (Amex, Diners),
+    # each separator a space or a hyphen. Each layout has a fixed number of
+    # groups so that a trailing expiry or CVV ("<card> 12/29", "<card> 123")
+    # is not absorbed: the longer match would fail luhn and the card would not
+    # be masked at all. luhn checks the length and the checksum.
+    pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011|65\d{2}|30[0-5]\d|3[689]\d{2})(?:\d{9,15}|(?:[ -]\d{4}){2}[ -]\d{1,7}|[ -]\d{6}[ -]\d{3,9})\b'
+    validators: [luhn]
+
+  - id: credit_card_19
+    kind: CREDIT_CARD
+    # 19 digits grouped 4-4-4-4-3. Kept apart from credit_card, which reads
+    # the first 16 of them as a card: the two layouts cannot be told apart
+    # from "<16-digit card> <CVV>" by pattern, so each is checked by luhn on
+    # its own and the longer valid match wins.
+    pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|35\d{2}|6011|65\d{2})(?:[ -]\d{4}){3}[ -]\d{3}\b'
     validators: [luhn]
