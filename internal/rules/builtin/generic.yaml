@@ -1,20 +1,51 @@
 id: builtin/generic
 description: Secrets recognised by context, such as `password = ...`.
 
+# The name part of the patterns is the same in every rule. It matches
+#   - password / passwd / pwd / passphrase / secret / api_key / access_token /
+#     auth_token / private_token / refresh_token / session_token, optionally
+#     extended (SECRET_KEY, PASSWORD_HASH, secretKey);
+#   - a name ending in _TOKEN, -token or Token (HF_TOKEN, npmToken). A bare
+#     "token" is not matched: it is too common as an ordinary word;
+#   - pass as a whole word or name part (DB_PASS, dbPass), but not inside a
+#     word (bypass, passage).
+#
+# The allow list (shared by every rule) skips values that look like code
+# rather than secrets. Each entry matches the whole value, so a real password
+# that merely contains ( ) { } $ @ or a dot is still masked.
+
 rules:
   - id: assignment
     kind: SECRET
     description: >
-      Value assigned to a password / secret / api_key / token style name,
-      including longer names built on them (SECRET_KEY, PASSWORD_HASH,
-      secretKey). The allow list rejects values that look like code rather
-      than secrets. A bare word is masked: it cannot be told apart from a
-      letters-only passphrase.
-    pattern: '(?i)(?:password|passwd|pwd|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*\b["'']?\s*[:=]\s*["'']?([^\s"''`,;]{8,})'
+      Value assigned to a password / secret / api_key / token style name with
+      =, :, := or => (shell, YAML, JSON, Go, PHP, Ruby). The value may contain
+      , and ; (but does not end with them) and stops at a quote or whitespace.
+      A bare word is masked: it cannot be told apart from a letters-only
+      passphrase.
+    pattern: '(?i)(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`]{7,}[^\s"''`,;])'
     group: 1
-    allow:
-      - '[(){}]'                                                       # getPassword(), ${X}
-      - '^[$%@]'                                                       # $VAR, %VAR%, @param
-      - '__LLMSP_'                                                     # already masked
-      - '^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+[)\]}]*$' # process.env.API_KEY
+    allow: &code_values
+      - '__LLMSP_'                                                           # already masked
+      - '^[A-Za-z_$][\w$.]*\([^)]*(?:\)[)\]};,.]*)?$'                        # getPassword(user), os.getenv(
+      - '^[$#]\{[^}]*\}$'                                                    # ${X}, #{x}
+      - '^\{\{.*\}\}$'                                                       # {{.Values.x}}
+      - '(?i)^[$@%][A-Za-z_]?\w*(?:pass|pwd|secret|key|token|cred|auth)\w*%?$' # $DB_PASSWORD, @dbPassword, %API_KEY%
+      - '^[$@][A-Za-z_]\w*(?:->|::|\.|\[)'                                   # $this->password, $cfg[
+      - '(?i)^(?:[A-Za-z_$][\w$]*\.)*(?:this|self|process|env|environ|config|conf|cfg|settings|options|opts|params|props|args|secrets?|credentials?|creds)\.(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*[\[(]?[)\]}]*$' # process.env.API_KEY
+      - '(?i)^(?:[A-Za-z_$][\w$]*\.)+[\w$]*(?:pass|pwd|secret|key|token)[\w$]*[\[(]?[)\]}]*$' # user.password
       - '(?i)^(?:x+|\*+|\.+|<[^>]*>|\[[^\]]*\]|changeme|placeholder|redacted|your[_-].*)$'
+
+  - id: xml_element
+    kind: SECRET
+    description: Text of an XML element with a password / secret style name (<password>...</password>).
+    pattern: '(?i)<[\w.:-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b(?:\s[^>]*)?>\s*([^<\s]{8,})\s*</'
+    group: 1
+    allow: *code_values
+
+  - id: php_define
+    kind: SECRET
+    description: PHP constant with a password / secret style name (define('DB_PASSWORD', '...')).
+    pattern: '(?i)\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["'']'
+    group: 1
+    allow: *code_values
