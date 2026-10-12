@@ -55,6 +55,8 @@ func TestURLCredentials(t *testing.T) {
 		"postgres://app:${DB_PASSWORD}@db/app",
 		"postgres://app:$DB_PASSWORD@db/app",
 		"postgres://app:{{ db_password }}@db/app",
+		"postgres://app:{password}@db/app",
+		"postgres://app:{self.db_password}@db/app",
 		"postgres://user:password@localhost/db",
 		"postgres://user:<password>@localhost/db",
 		"postgres://user:****@localhost/db",
