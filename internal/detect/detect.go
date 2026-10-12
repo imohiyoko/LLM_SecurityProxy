@@ -24,6 +24,9 @@ type Rule struct {
 	Re   *regexp.Regexp
 	// Group selects the capture group to mask; 0 masks the whole match.
 	Group int
+	// Groups, when set, replaces Group: the first listed group that took
+	// part in the match is masked.
+	Groups []int
 	// Allow lists patterns; a value matching any of them is not masked.
 	Allow []*regexp.Regexp
 	// Validators must all return true for the value to be masked.
@@ -48,7 +51,13 @@ func (d *Detector) Find(s string) []Match {
 	var out []Match
 	for _, r := range d.rules {
 		for _, idx := range r.Re.FindAllStringSubmatchIndex(s, -1) {
-			start, end := idx[2*r.Group], idx[2*r.Group+1]
+			g := r.Group
+			for _, c := range r.Groups {
+				if g = c; idx[2*c] >= 0 {
+					break
+				}
+			}
+			start, end := idx[2*g], idx[2*g+1]
 			if start < 0 || start == end {
 				continue
 			}

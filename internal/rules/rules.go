@@ -55,6 +55,9 @@ type Spec struct {
 	Pattern string `yaml:"pattern"`
 	// Group selects the capture group to mask; 0 masks the whole match.
 	Group int `yaml:"group"`
+	// Groups lists alternative capture groups instead of Group; the first
+	// one that took part in the match is masked.
+	Groups []int `yaml:"groups"`
 	// Values are literal strings to mask.
 	Values []string `yaml:"values"`
 	// ValuesFile holds one literal per line, relative to the ruleset file.
@@ -302,7 +305,7 @@ func compile(rs *Ruleset, s *Spec) (detect.Rule, error) {
 		return fail("set exactly one of pattern or values / values_file")
 	}
 
-	r := detect.Rule{ID: id, Kind: s.Kind, Group: s.Group}
+	r := detect.Rule{ID: id, Kind: s.Kind, Group: s.Group, Groups: s.Groups}
 	if s.Pattern != "" {
 		re, err := regexp.Compile(s.Pattern)
 		if err != nil {
@@ -311,9 +314,17 @@ func compile(rs *Ruleset, s *Spec) (detect.Rule, error) {
 		if s.Group < 0 || s.Group > re.NumSubexp() {
 			return fail("group %d out of range (pattern has %d groups)", s.Group, re.NumSubexp())
 		}
+		if s.Group != 0 && len(s.Groups) > 0 {
+			return fail("set at most one of group or groups")
+		}
+		for _, g := range s.Groups {
+			if g < 1 || g > re.NumSubexp() {
+				return fail("groups: %d out of range (pattern has %d groups)", g, re.NumSubexp())
+			}
+		}
 		r.Re = re
 	} else {
-		if s.Group != 0 {
+		if s.Group != 0 || len(s.Groups) > 0 {
 			return fail("group is only valid with pattern")
 		}
 		values := append([]string(nil), s.Values...)
