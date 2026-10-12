@@ -2,13 +2,16 @@ id: builtin/generic
 description: Secrets recognised by context, such as `password = ...`.
 
 # The name part of the patterns is the same in every rule. It matches
-#   - password / passwd / pwd / passphrase / secret / api_key / access_token /
-#     auth_token / private_token / refresh_token / session_token, optionally
+#   - password / passwd / pwd / passphrase / secret / api_key, optionally
 #     extended (SECRET_KEY, PASSWORD_HASH, secretKey);
-#   - a name ending in _TOKEN, -token or Token (HF_TOKEN, npmToken). A bare
-#     "token" is not matched: it is too common as an ordinary word;
+#   - access_token / auth_token / private_token / refresh_token /
+#     session_token and a name ending in _TOKEN, -token or Token (HF_TOKEN,
+#     npmToken). These are not extended, so prompt_token_count is not matched.
+#     A bare "token" is not matched: it is too common as an ordinary word;
 #   - pass as a whole word or name part (DB_PASS, dbPass), but not inside a
 #     word (bypass, passage).
+# Pagination cursors (page_token, nextPageToken) are consumed without a
+# capture so they are never masked.
 #
 # The allow list (shared by every rule) skips values that look like code
 # rather than secrets. Each entry matches the whole value, so a real password
@@ -19,19 +22,26 @@ rules:
     kind: SECRET
     description: >
       Value assigned to a password / secret / api_key / token style name with
-      =, :, := or => (shell, YAML, JSON, Go, PHP, Ruby). The value may contain
-      , and ; (but does not end with them) and stops at a quote or whitespace.
-      A bare word is masked: it cannot be told apart from a letters-only
-      passphrase.
-    pattern: '(?i)(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`]{7,}[^\s"''`,;])'
+      =, :, := or => (shell, YAML, JSON, Go, PHP, Ruby). The value stops at a
+      quote or whitespace. It may contain , and ; but ends before one that is
+      followed by another `name=`, so a connection string
+      (Password=...;Database=...) or a list of assignments is split. A bare
+      word is masked: it cannot be told apart from a letters-only passphrase.
+    pattern: '(?i)(?:page[_-]?token\b["'']?\s*(?::=|=>|[:=])|(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`,;]+(?:[,;][^\s"''`,;=]+)*)(?:[\s"''`,;]|$))'
     group: 1
     allow: &code_values
       - '__LLMSP_'                                                           # already masked
-      - '^[A-Za-z_$][\w$.]*\([^)]*(?:\)[)\]};,.]*)?$'                        # getPassword(user), os.getenv(
+      - '^.{0,7}$'                                                           # too short
+      - '^(?:[a-z_$][A-Za-z_$]*|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\([^)]*(?:\)[)\]};,.]*)?$' # getPassword(user), os.getenv(
       - '^[$#]\{[^}]*\}$'                                                    # ${X}, #{x}
       - '^\{\{.*\}\}$'                                                       # {{.Values.x}}
-      - '(?i)^[$@%][A-Za-z_]?\w*(?:pass|pwd|secret|key|token|cred|auth)\w*%?$' # $DB_PASSWORD, @dbPassword, %API_KEY%
-      - '^[$@][A-Za-z_]\w*(?:->|::|\.|\[)'                                   # $this->password, $cfg[
+      - '^\{[A-Za-z_][\w.]*\}$'                                               # {password}, {self.password}
+      - '^%\([\w.]+\)[sdr]$'                                                 # %(password)s
+      - '(?i)^[$@][a-z_]*(?:pass|pwd|secret|key|token|cred|auth)[a-z_]*$'     # $DB_PASSWORD, @dbPassword
+      - '^%[A-Z_][A-Z0-9_]*%$'                                               # %API_KEY%
+      - '^[A-Z_]*(?:PASS|PWD|SECRET|KEY|TOKEN|CRED|AUTH)[A-Z_]*[)\]}]*$'      # API_KEY, f(api_key=API_KEY)
+      - '(?i)^[a-z_]*(?:pass|pwd|secret|key|token|cred|auth)[a-z_]*[)\]}]+$'  # f(api_key=api_key)
+      - '^[$@][A-Za-z_]\w*(?:(?:->|::|\.)[A-Za-z_]\w*|\[[^\]]*\]?)+[)\]};]*$' # $this->password, $cfg[
       - '(?i)^(?:[A-Za-z_$][\w$]*\.)*(?:this|self|process|env|environ|config|conf|cfg|settings|options|opts|params|props|args|secrets?|credentials?|creds)\.(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*[\[(]?[)\]}]*$' # process.env.API_KEY
       - '(?i)^(?:[A-Za-z_$][\w$]*\.)+[\w$]*(?:pass|pwd|secret|key|token)[\w$]*[\[(]?[)\]}]*$' # user.password
       - '(?i)^(?:x+|\*+|\.+|<[^>]*>|\[[^\]]*\]|changeme|placeholder|redacted|your[_-].*)$'
@@ -39,13 +49,13 @@ rules:
   - id: xml_element
     kind: SECRET
     description: Text of an XML element with a password / secret style name (<password>...</password>).
-    pattern: '(?i)<[\w.:-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b(?:\s[^>]*)?>\s*([^<\s]{8,})\s*</'
+    pattern: '(?i)(?:<[\w.:-]*?page[_-]?token\b|<[\w.:-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b(?:\s[^>]*)?>\s*([^<\s]{8,})\s*</)'
     group: 1
     allow: *code_values
 
   - id: php_define
     kind: SECRET
     description: PHP constant with a password / secret style name (define('DB_PASSWORD', '...')).
-    pattern: '(?i)\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?token|refresh[_-]?token|session[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["'']'
+    pattern: '(?i)\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["'']'
     group: 1
     allow: *code_values

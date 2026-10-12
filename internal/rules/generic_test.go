@@ -47,6 +47,18 @@ func TestGenericForms(t *testing.T) {
 		{"builtin/generic:assignment", `password="FakePwVa;lue9xyz"`, "FakePwVa;lue9xyz"},
 		{"builtin/generic:assignment", "PASSWORD=" + v + ";", v},
 		{"builtin/generic:assignment", "{password: " + v + ", user: bob}", v},
+		{"builtin/generic:assignment", "password=Pa55w(rd)", "Pa55w(rd)"},
+		{"builtin/generic:assignment", "password=$uperKey99", "$uperKey99"},
+		{"builtin/generic:assignment", "password=@dminPass1", "@dminPass1"},
+
+		// A skipped value does not swallow the next assignment.
+		{"builtin/generic:assignment", "password=__LLMSP_SECRET_" + "0123456789ab" + "__;api_key=<v>", v},
+		{"builtin/generic:assignment", "password=$DB_PASSWORD,api_key=<v>", v},
+		{"builtin/generic:assignment", "password=changeme;secret=<v>", v},
+
+		// Connection strings end the value at ';'.
+		{"builtin/generic:assignment", "Server=db;Password=<v>;Database=prod;User Id=sa", v},
+		{"builtin/generic:assignment", "Server=db;Password=<v>;Encrypt=true", v},
 	}
 	for _, c := range cases {
 		text := strings.ReplaceAll(c.text, "<v>", v)
@@ -82,7 +94,22 @@ func TestGenericNegative(t *testing.T) {
 		"token: tokenValue",
 		"Authorization: Bearer $TOKEN",
 		"password: changeme",
+
+		// Code that passes a variable or template on.
+		"client = OpenAI(api_key=API_KEY)",
+		"client = OpenAI(api_key=api_key)",
+		`f"password={self.password}"`,
+		`"password=%(password)s" % params`,
+		"password={password}",
+
+		// Token counts and pagination cursors.
+		`"prompt_token_count": 12345678`,
+		`"total_token_count": 123456789`,
+		`"next_page_token": "<v>"`,
+		"nextPageToken: <v>",
+		"page_token=<v>",
 	} {
+		text = strings.ReplaceAll(text, "<v>", fakeValue())
 		if got := found(d, text); len(got) != 0 {
 			t.Errorf("%q: unexpected matches %v", text, got)
 		}
