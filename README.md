@@ -41,7 +41,7 @@ addressed as `<ruleset id>:<rule id>`, e.g. `builtin/pii:email`.
 
 | Ruleset | Default | Contents |
 |---|---|---|
-| `builtin/credentials` | on | private keys, AWS keys, GitHub / Slack / Anthropic / OpenAI / Google tokens, Slack webhooks, JWTs |
+| `builtin/credentials` | on | private keys (PEM, PGP), AWS keys, GitHub / GitLab / Slack (incl. app-level) / Anthropic / OpenAI / Google / Stripe / npm tokens, Slack webhooks, JWTs, passwords in URLs (`scheme://user:pass@host`) |
 | `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked) |
 | `builtin/generic` | on | `password=` / `api_key:` style assignments |
 | `builtin/network` | off | IPv4 addresses |
