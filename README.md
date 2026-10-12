@@ -42,14 +42,15 @@ addressed as `<ruleset id>:<rule id>`, e.g. `builtin/pii:email`.
 | Ruleset | Default | Contents |
 |---|---|---|
 | `builtin/credentials` | on | private keys (PEM, PGP), AWS keys, GitHub / GitLab / Slack (incl. app-level) / Anthropic / OpenAI / Google / Stripe / npm tokens, Slack webhooks, JWTs, passwords in URLs (`scheme://user:pass@host`), `Authorization` header credentials |
-| `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked) |
+| `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked), person names by field name (`userName`, `display_name`, `FULL_NAME`, ...) |
 | `builtin/generic` | on | `password=` / `api_key:` / `HF_TOKEN=` style assignments (also `:=`, `=>`, XML elements, PHP `define()`) |
 | `builtin/network` | off | IPv4 addresses |
 
 Add your own rulesets as `*.yaml` files in `rules.d/` next to your config (see
 [`examples/rules.d/example.yaml`](examples/rules.d/example.yaml)): literal
 values (host names, customer names, ...) or regular expressions, each with its
-own allow patterns. A file with the same ID as a built-in ruleset replaces it.
+own allow patterns, or field names (`keys:`) whose values are masked whole
+however the name is spelled. A file with the same ID as a built-in ruleset replaces it.
 Turn rulesets or single rules on and off in `config.yaml`:
 
 ```yaml

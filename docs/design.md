@@ -61,12 +61,15 @@ rules:
     case_insensitive: true
   - id: code
     kind: PROJECT
-    pattern: '...'            # RE2; exactly one of pattern / values
+    pattern: '...'            # RE2; exactly one of pattern / values / keys
     group: 1                  # mask one capture group only
     # groups: [1, 2]          # or: the first of these groups that matched
     allow: ['...']            # values matching these are not masked
     validators: [luhn]        # named checks a regexp cannot express
     enabled: true
+  - id: customer
+    kind: CUSTOMER
+    keys: [customer_name]     # field names: mask the whole value of the field
 ```
 
 - Built-in rulesets are embedded files in the same format
@@ -82,6 +85,38 @@ rules:
   regular expressions are awkward to escape in them, and they live in project
   directories that agents read and that tend to get committed.
 
+### Field rules
+
+A rule with `keys:` masks the whole value assigned to a field with one of
+those names. It is for data that has no recognisable format, such as
+person names (`builtin/pii:name`), where only the field name says what the
+value is.
+
+- Names are compared after normalisation: split on any character that is not
+  a letter or digit and on camelCase boundaries, lower-cased. `userName`,
+  `user_name`, `user-name`, `USER_NAME` and `user.name` are all `user name`.
+  The whole name must match a key; a longer name (`billing_user_name`,
+  `userNameKana`) does not. A dotted path also matches on its last segment
+  (`self.user_name`, `profile.displayName`).
+- In text, a field is a name, optionally quoted (`"name"`, `'name'`,
+  `\"name\"`) or a Ruby symbol, followed by `:`, `=`, `:=` or `=>`. This
+  covers JSON, YAML, logfmt, env and shell, HTML attributes and most
+  languages' assignments and keyword arguments. A quoted value runs to its
+  closing quote on the same line, spaces and escapes included. An unquoted
+  value runs to the end of the line, and stops earlier at a tab, a quote,
+  `=` or one of ``) ] } < > | ` ``; at a space, `,`, `;` or `&` followed by
+  another `name=` / `name:`; and at ` #`. Running on rather than stopping at a
+  space masks free text that follows a name instead of leaking its second
+  word. Values that start a nested structure or a YAML block, anchor, alias
+  or tag are skipped.
+- In request JSON, a string member of an object inside tool arguments is
+  matched by its key directly, without reading text. Header names and query
+  keys are used the same way for their values.
+- The value is masked whole; `allow` and `validators` apply to it as usual.
+  The builtin allow list skips values that are not names: no letters at all,
+  `null` / `admin` / `root` style words, references such as `first_name` or
+  `request.user.name`, type annotations, calls and templates.
+
 ### Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value
@@ -96,6 +131,17 @@ rules:
 The known-value pass matters. After a response is unmasked, the agent's history
 contains the real value, often without the context (`password=`) that a
 detector needs. Exact matching against stored values masks it again.
+
+Values found by field rules go through the same pass with the same policy: at
+least 6 bytes, matched anywhere, persisted in the store like every other
+value. So a name seen once in a field (`"userName": "Jane Doe"`) is masked in
+later free text (`Jane Doe joined the call`), which is the point of field
+rules. The trade-offs are accepted deliberately:
+
+- A short name (`Bob`) is masked in its field but not in free text.
+- A name of 6 bytes or more is masked inside longer words too (`Jordan` in
+  `Jordanian`). A two-character CJK name is already 6 bytes.
+- Masking a common word everywhere is visible to the model as a placeholder.
 
 Long strings are memoized because history is resent on every turn. The cache
 is invalidated whenever the set of known values changes, so a newly learned
@@ -155,5 +201,6 @@ into memory at start-up.
 - OpenAI Chat Completions / Responses (Codex, Cline). Function call
   `arguments` are JSON strings and need JSON-escaped restoration.
 - OS keychain for the master key; retention / expiry of stored values.
-- NER-based detection (names, organisations).
+- NER-based detection (names, organisations) in free text. Names are only
+  found by their field name, and in free text once seen in a field.
 - A CLI to list, look up and purge stored values.

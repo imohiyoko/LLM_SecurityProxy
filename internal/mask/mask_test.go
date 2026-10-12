@@ -162,3 +162,58 @@ func TestNineteenDigitCardMaskedWhole(t *testing.T) {
 		t.Errorf("got %q, want the card replaced by one placeholder", out)
 	}
 }
+
+// A value read from a field is masked whole and, once stored, masked again by
+// exact match without its field name (the known-value pass).
+func TestFieldValuePropagates(t *testing.T) {
+	m, st := newMasker(t)
+	in := `{"userName": "Jane Doe"}`
+	out, _ := m.String(in, Stats{}, nil)
+	if strings.Contains(out, "Jane") || !strings.Contains(out, "__LLMSP_NAME_") {
+		t.Fatalf("field value not masked: %s", out)
+	}
+	if back, _ := unmask.Replace(out, st, unmask.Identity); back != in {
+		t.Fatalf("round trip: %q", back)
+	}
+	stats := Stats{}
+	later, _ := m.String("Jane Doe joined the call", stats, nil)
+	if strings.Contains(later, "Jane Doe") || stats["NAME"] != 1 {
+		t.Fatalf("known name not masked in free text: %s %v", later, stats)
+	}
+}
+
+// Field-derived values follow the same known-value policy as every other
+// value: at least MinKnownLen bytes, matched anywhere. A shorter value is
+// masked in its field but not in free text.
+func TestFieldValueKnownPolicy(t *testing.T) {
+	m, _ := newMasker(t)
+	m.String("first_name: Bob\nlast_name: Jordan\n", Stats{}, nil)
+	out, _ := m.String("Bob met Jordan in Jordanian", Stats{}, nil)
+	if !strings.HasPrefix(out, "Bob met __LLMSP_NAME_") || strings.Contains(out, "Jordan") {
+		t.Fatalf("policy changed: %s", out)
+	}
+}
+
+func TestFieldByKey(t *testing.T) {
+	m, st := newMasker(t)
+	stats := Stats{}
+	out, err := m.Field("displayName", "Jane Doe", stats, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "__LLMSP_NAME_") || stats["NAME"] != 1 {
+		t.Fatalf("not masked whole: %s %v", out, stats)
+	}
+	if back, _ := unmask.Replace(out, st, unmask.Identity); back != "Jane Doe" {
+		t.Fatalf("round trip: %q", back)
+	}
+	// Allowed values and other names fall back to ordinary masking.
+	for _, c := range [][2]string{{"userName", "admin"}, {"title", "Jane Roe"}} {
+		if out, _ := m.Field(c[0], c[1], Stats{}, nil); out != c[1] {
+			t.Errorf("Field(%q, %q) = %q", c[0], c[1], out)
+		}
+	}
+	if out, _ := m.Field("title", "mail bob@corp.dev", Stats{}, nil); strings.Contains(out, "bob@corp.dev") {
+		t.Errorf("fallback did not mask: %s", out)
+	}
+}

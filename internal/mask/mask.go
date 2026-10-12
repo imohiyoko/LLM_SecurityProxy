@@ -85,7 +85,7 @@ func (m *Masker) String(s string, stats Stats, ids IDs) (string, error) {
 
 	local := Stats{}
 	var issued []string
-	out, err := m.mask(s, known, local, &issued)
+	out, err := m.mask(s, known, nil, local, &issued)
 	if err != nil {
 		return "", err
 	}
@@ -112,6 +112,30 @@ func (m *Masker) String(s string, stats Stats, ids IDs) (string, error) {
 	return out, nil
 }
 
+// Field masks value as the value of a field named key, where the name is
+// known from structure (a JSON object member, a header, a query parameter)
+// rather than written in the text. If a field rule matches the name, the
+// whole value is masked; otherwise, or in addition, the value is masked as
+// String would.
+func (m *Masker) Field(key, value string, stats Stats, ids IDs) (string, error) {
+	whole := m.det.Field(key, value)
+	if len(whole) == 0 {
+		return m.String(value, stats, ids)
+	}
+	known, _ := m.store.Known()
+	local := Stats{}
+	var issued []string
+	out, err := m.mask(value, known, whole, local, &issued)
+	if err != nil {
+		return "", err
+	}
+	for k, n := range local {
+		stats[k] += n
+	}
+	addIDs(ids, issued)
+	return out, nil
+}
+
 func addIDs(ids IDs, add []string) {
 	if ids == nil {
 		return
@@ -121,7 +145,9 @@ func addIDs(ids IDs, add []string) {
 	}
 }
 
-func (m *Masker) mask(s string, known []string, stats Stats, issued *[]string) (string, error) {
+// mask masks s. extra are matches found by the caller, in addition to the
+// detector's.
+func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stats, issued *[]string) (string, error) {
 	var spans []span
 	// Only a placeholder this store issued, written exactly as issued, is
 	// protected. Anything else of that shape is masked as a whole: its kind
@@ -136,7 +162,7 @@ func (m *Masker) mask(s string, known []string, stats Stats, issued *[]string) (
 			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET"})
 		}
 	}
-	for _, d := range m.det.Find(s) {
+	for _, d := range append(m.det.Find(s), extra...) {
 		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind})
 	}
 	// Values seen before, e.g. a secret the model wrote back into code after

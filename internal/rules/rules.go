@@ -21,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/field"
 )
 
 //go:embed builtin/*.yaml
@@ -45,8 +46,8 @@ type Ruleset struct {
 	dir    string
 }
 
-// Spec is one rule as written in YAML. Exactly one of Pattern or
-// Values / ValuesFile must be set.
+// Spec is one rule as written in YAML. Exactly one of Pattern,
+// Values / ValuesFile or Keys must be set.
 type Spec struct {
 	ID          string `yaml:"id"`
 	Kind        string `yaml:"kind"`
@@ -62,6 +63,9 @@ type Spec struct {
 	Values []string `yaml:"values"`
 	// ValuesFile holds one literal per line, relative to the ruleset file.
 	ValuesFile string `yaml:"values_file"`
+	// Keys are field names; the whole value assigned to a field with one of
+	// these names is masked, however the name is spelled (see package field).
+	Keys []string `yaml:"keys"`
 	// CaseInsensitive applies to Values / ValuesFile.
 	CaseInsensitive bool `yaml:"case_insensitive"`
 	// Allow lists RE2 patterns; a matched value that matches any is not masked.
@@ -301,12 +305,27 @@ func compile(rs *Ruleset, s *Spec) (detect.Rule, error) {
 		return fail("kind is required")
 	}
 	hasValues := len(s.Values) > 0 || s.ValuesFile != ""
-	if (s.Pattern == "") == !hasValues {
-		return fail("set exactly one of pattern or values / values_file")
+	set := 0
+	for _, has := range []bool{s.Pattern != "", hasValues, len(s.Keys) > 0} {
+		if has {
+			set++
+		}
+	}
+	if set != 1 {
+		return fail("set exactly one of pattern, values / values_file or keys")
 	}
 
 	r := detect.Rule{ID: id, Kind: s.Kind, Group: s.Group, Groups: s.Groups}
-	if s.Pattern != "" {
+	if len(s.Keys) > 0 {
+		if s.Group != 0 || len(s.Groups) > 0 {
+			return fail("group is only valid with pattern")
+		}
+		ks, err := field.NewKeySet(s.Keys)
+		if err != nil {
+			return fail("keys: %v", err)
+		}
+		r.Keys = ks
+	} else if s.Pattern != "" {
 		re, err := regexp.Compile(s.Pattern)
 		if err != nil {
 			return fail("pattern: %v", err)

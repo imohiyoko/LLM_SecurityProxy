@@ -180,7 +180,9 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, err
 		return nil, nil, nil, &httpError{http.StatusUnsupportedMediaType, "llmsp: request body must be a single JSON value"}
 	}
 
-	doc, err = maskStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats, ids) })
+	doc, err = maskStrings(doc,
+		func(v string) (string, error) { return s.Masker.String(v, stats, ids) },
+		func(k, v string) (string, error) { return s.Masker.Field(k, v, stats, ids) })
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -200,7 +202,7 @@ func (s *Server) maskHeader(h http.Header, stats mask.Stats, ids mask.IDs) error
 			continue
 		}
 		for i, v := range vs {
-			out, err := s.Masker.String(v, stats, ids)
+			out, err := s.Masker.Field(k, v, stats, ids)
 			if err != nil {
 				return err
 			}
@@ -228,7 +230,7 @@ func (s *Server) maskQuery(raw string, stats mask.Stats, ids mask.IDs) (string, 
 			return "", err
 		}
 		for _, v := range vs {
-			mv, err := s.Masker.String(v, stats, ids)
+			mv, err := s.Masker.Field(k, v, stats, ids)
 			if err != nil {
 				return "", err
 			}
