@@ -157,7 +157,8 @@ func TestNineteenDigitCardMaskedWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "0000") || !strings.HasSuffix(out, " exp 12/29") {
-		t.Errorf("got %q", out)
+	want := regexp.MustCompile(`^card ` + placeholder.Pattern.String() + ` exp 12/29$`)
+	if !want.MatchString(out) {
+		t.Errorf("got %q, want the card replaced by one placeholder", out)
 	}
 }
