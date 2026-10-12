@@ -19,9 +19,32 @@ func TestURLCredentials(t *testing.T) {
 		"amqp://guest:" + pw + "@localhost/",
 		`"url": "mysql://root:` + pw + `@127.0.0.1:3306/x"`,
 		"mongodb+srv://u:" + pw + "@cluster0.mongodb.example.net/db",
+		"postgres://app:" + pw + "@db",
+		"postgres://app:" + pw + "@db?sslmode=require",
+		`connect("postgres://app:` + pw + `@db")`,
+		"postgres://app:" + pw + "@db/app?next=x@y",
 	} {
 		if got := found(d, text)[rule]; got != pw {
 			t.Errorf("%q: got %q, want %q", text, got, pw)
+		}
+	}
+	// Passwords with characters that should have been percent-encoded are
+	// still masked whole: the password runs to the last @ before the host.
+	for _, p := range []string{
+		"Fa@ke" + "Pw99",
+		"Fa@ke@" + "Pw99",
+		"Fa/ke" + "Pw99",
+		"Fa/k@e" + "Pw99",
+		"Fa%40ke" + "Pw99",
+	} {
+		for _, text := range []string{
+			"postgres://app:" + p + "@db:5432/app",
+			"redis://:" + p + "@cache",
+			"DATABASE_URL=mysql://root:" + p + "@10.0.0.5/x other@text",
+		} {
+			if got := found(d, text)[rule]; got != p {
+				t.Errorf("%q: got %q, want %q", text, got, p)
+			}
 		}
 	}
 	for _, text := range []string{
@@ -36,6 +59,9 @@ func TestURLCredentials(t *testing.T) {
 		"postgres://user:<password>@localhost/db",
 		"postgres://user:****@localhost/db",
 		"redis://:__LLMSP_SECRET_0123456789ab__@cache",
+		"https://host/path@x",
+		"https://host:8443/path@x",
+		"https://host:8443/a?next=http://u@x",
 	} {
 		if got, ok := found(d, text)[rule]; ok {
 			t.Errorf("%q: unexpected match %q", text, got)
