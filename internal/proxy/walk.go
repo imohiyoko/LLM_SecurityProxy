@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -27,11 +27,21 @@ var skipKeys = map[string]bool{
 	"encrypted_content": true,
 }
 
-// freeKeys hold arbitrary user data (tool arguments). Everything below them is
-// content, whatever the key names are.
-var freeKeys = map[string]bool{
-	"input":     true, // Anthropic tool_use
-	"arguments": true, // OpenAI function calls
+// toolArgs reports whether m[k] holds tool arguments: arbitrary user data,
+// where everything below is content whatever the key names are. "input" only
+// counts inside a tool-use block; the OpenAI Responses API also uses it at the
+// top level for the whole conversation, which keeps its protocol fields.
+func toolArgs(k string, m map[string]any) bool {
+	switch k {
+	case "input":
+		switch m["type"] {
+		case "tool_use", "server_tool_use", "mcp_tool_use":
+			return true
+		}
+	case "arguments": // OpenAI function calls
+		return true
+	}
+	return false
 }
 
 // opaqueBlock reports whether a content block must be passed through byte for
@@ -49,19 +59,18 @@ func opaqueBlock(m map[string]any) bool {
 // raw JSON, keys included, so the request side must mask them as well or a
 // restored key would be resent upstream in plaintext on the next turn.
 //
-// If a rewritten key would collide with another key of the same object, the
+// If a restored key would collide with another key of the same object, the
 // key is kept as it was, so no member is dropped.
 func walkStrings(v any, fn func(string) (string, error)) (any, error) {
 	return walk(v, fn, false, false)
 }
 
-// maskStrings is walkStrings for the request side: a key collision is an
-// error, so a key that should be masked is never forwarded as is.
+// maskStrings is walkStrings for the request side, where a key that should be
+// masked is never forwarded as is: a masked key that would collide gets a
+// " (n)" suffix instead (see rekey).
 func maskStrings(v any, fn func(string) (string, error)) (any, error) {
 	return walk(v, fn, false, true)
 }
-
-var errKeyCollision = errors.New("proxy: masked object key collides with another key")
 
 func walk(v any, fn func(string) (string, error), free, strict bool) (any, error) {
 	switch t := v.(type) {
@@ -84,7 +93,7 @@ func walk(v any, fn func(string) (string, error), free, strict bool) (any, error
 			if !free && skipKeys[k] && !textData(k, t) {
 				continue
 			}
-			nv, err := walk(e, fn, free || freeKeys[k], strict)
+			nv, err := walk(e, fn, free || toolArgs(k, t), strict)
 			if err != nil {
 				return nil, err
 			}
@@ -104,9 +113,18 @@ func walk(v any, fn func(string) (string, error), free, strict bool) (any, error
 // rekey applies fn to the keys of m. Keys are visited in sorted order, and a
 // new key may not take the name of any original key or of an earlier
 // rewritten one, so the result does not depend on map iteration order.
+//
+// A colliding key is kept as it was, unless strict: then it is renamed to the
+// new key plus " (2)", " (3)", ..., the first free one. The secret is not sent,
+// no member is dropped, and the same input always gives the same result, so a
+// client resending it as history every turn is not rejected every turn.
 func rekey(m map[string]any, fn func(string) (string, error), strict bool) error {
 	keys := slices.Sorted(maps.Keys(m))
 	taken := map[string]bool{}
+	free := func(k string) bool {
+		_, orig := m[k]
+		return !orig && !taken[k]
+	}
 	type move struct{ from, to string }
 	var moves []move
 	for _, k := range keys {
@@ -117,11 +135,14 @@ func rekey(m map[string]any, fn func(string) (string, error), strict bool) error
 		if nk == k {
 			continue
 		}
-		if _, orig := m[nk]; orig || taken[nk] {
-			if strict {
-				return errKeyCollision
+		if !free(nk) {
+			if !strict {
+				continue
 			}
-			continue
+			base := nk
+			for n := 2; !free(nk); n++ {
+				nk = fmt.Sprintf("%s (%d)", base, n)
+			}
 		}
 		taken[nk] = true
 		moves = append(moves, move{k, nk})

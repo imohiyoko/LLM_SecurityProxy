@@ -25,14 +25,19 @@ extra CA bundle for TLS-inspecting proxies.
 2. Walk the JSON and mask every content string.
    - Protocol fields (`type`, `id`, `tool_use_id`, `signature`, base64 `data`,
      ...) are skipped, but only at the protocol level. Everything inside tool
-     arguments (`input`, `arguments`) is content, whatever its keys are called.
+     arguments (`input` of a `tool_use` block, `arguments`) is content,
+     whatever its keys are called. The top-level `input` of the OpenAI
+     Responses API is the conversation, not a tool argument: its protocol
+     fields and reasoning items are still skipped.
      Object keys inside tool arguments are masked too: streamed tool input is
      restored as raw JSON, keys included, and comes back as history on the
      next turn. A masked key that would collide with another key of the same
-     object is rejected (400) rather than dropping a member.
+     object gets a ` (2)`, ` (3)`, ... suffix, so no member is dropped and the
+     same history is masked the same way every turn.
    - Plain-text document sources (`media_type: text/*`) are content.
-   - `thinking` / `redacted_thinking` blocks are passed through byte for byte:
-     they are signed and editing them makes the API reject the request.
+   - `thinking` / `redacted_thinking` / `reasoning` blocks are passed through
+     byte for byte: they are signed and editing them makes the API reject the
+     request.
 3. Mask header values and query keys and values the same way. Only the
    headers in `upstream.auth_headers` (default `Authorization`, `X-Api-Key`)
    are forwarded unmasked; they carry the upstream credential. An unchanged

@@ -181,9 +181,6 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, err
 	}
 
 	doc, err = maskStrings(doc, func(v string) (string, error) { return s.Masker.String(v, stats, ids) })
-	if errors.Is(err, errKeyCollision) {
-		return nil, nil, nil, &httpError{http.StatusBadRequest, "llmsp: a masked object key collides with another key"}
-	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
