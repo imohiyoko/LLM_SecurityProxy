@@ -6,12 +6,14 @@ description: Secrets recognised by context, such as `password = ...`.
 #     extended (SECRET_KEY, PASSWORD_HASH, secretKey);
 #   - access_token / auth_token / private_token / refresh_token /
 #     session_token and a name ending in _TOKEN, -token or Token (HF_TOKEN,
-#     npmToken). These are not extended, so prompt_token_count is not matched.
-#     A bare "token" is not matched: it is too common as an ordinary word;
+#     npmToken), also extended (AUTH_TOKEN_VALUE, refresh_token_v2). A bare
+#     "token" is not matched: it is too common as an ordinary word;
 #   - pass as a whole word or name part (DB_PASS, dbPass), but not inside a
 #     word (bypass, passage).
-# Pagination cursors (page_token, nextPageToken) are consumed without a
-# capture so they are never masked.
+# Pagination cursors (page_token, nextPageToken), and an extended token name
+# with an integer value (prompt_token_count: 1234), are consumed without a
+# capture so they are never masked. A token whose name is extended and whose
+# value is digits only is therefore not masked either.
 #
 # The allow list (shared by every rule) skips values that look like code
 # rather than secrets. Each entry matches the whole value, so a real password
@@ -27,7 +29,7 @@ rules:
       followed by another `name=`, so a connection string
       (Password=...;Database=...) or a list of assignments is split. A bare
       word is masked: it cannot be told apart from a letters-only passphrase.
-    pattern: '(?i)(?:page[_-]?token\b["'']?\s*(?::=|=>|[:=])|(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`,;]+(?:[,;][^\s"''`,;=]+)*)(?:[\s"''`,;]|$))'
+    pattern: '(?i)(?:page[_-]?token\b["'']?\s*(?::=|=>|[:=])|(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']?\s*(?::=|=>|[:=])\s*["'']?\d+(?:[\s"''`,;)\]}]|$)|(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']?\s*(?::=|=>|[:=])\s*["'']?([^\s"''`,;]+(?:[,;][^\s"''`,;=]+)*)(?:[\s"''`,;]|$))'
     group: 1
     allow: &code_values
       - '__LLMSP_'                                                           # already masked
@@ -39,7 +41,7 @@ rules:
       - '^%\([\w.]+\)[sdr]$'                                                 # %(password)s
       - '(?i)^[$@][a-z_]*(?:pass|pwd|secret|key|token|cred|auth)[a-z_]*$'     # $DB_PASSWORD, @dbPassword
       - '^%[A-Z_][A-Z0-9_]*%$'                                               # %API_KEY%
-      - '^[A-Z_]*(?:PASS|PWD|SECRET|KEY|TOKEN|CRED|AUTH)[A-Z_]*[)\]}]*$'      # API_KEY, f(api_key=API_KEY)
+      - '^(?:[A-Z_]*_[A-Z_]*(?:PASS|PWD|SECRET|KEY|TOKEN|CRED|AUTH)[A-Z_]*|[A-Z_]*(?:PASS|PWD|SECRET|KEY|TOKEN|CRED|AUTH)[A-Z_]*_[A-Z_]*|PASS(?:WORD|WD|PHRASE)?|SECRETS?|TOKENS?|APIKEY|CREDENTIALS?)[)\]}]*$' # API_KEY, f(api_key=API_KEY)
       - '(?i)^[a-z_]*(?:pass|pwd|secret|key|token|cred|auth)[a-z_]*[)\]}]+$'  # f(api_key=api_key)
       - '^[$@][A-Za-z_]\w*(?:(?:->|::|\.)[A-Za-z_]\w*|\[[^\]]*\]?)+[)\]};]*$' # $this->password, $cfg[
       - '(?i)^(?:[A-Za-z_$][\w$]*\.)*(?:this|self|process|env|environ|config|conf|cfg|settings|options|opts|params|props|args|secrets?|credentials?|creds)\.(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*[\[(]?[)\]}]*$' # process.env.API_KEY
@@ -49,13 +51,13 @@ rules:
   - id: xml_element
     kind: SECRET
     description: Text of an XML element with a password / secret style name (<password>...</password>).
-    pattern: '(?i)(?:<[\w.:-]*?page[_-]?token\b|<[\w.:-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b(?:\s[^>]*)?>\s*([^<\s]{8,})\s*</)'
+    pattern: '(?i)(?:<[\w.:-]*?page[_-]?token\b|<[\w.:-]*?(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b(?:\s[^>]*)?>\s*\d+\s*</|<[\w.:-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b(?:\s[^>]*)?>\s*([^<\s]{8,})\s*</)'
     group: 1
     allow: *code_values
 
   - id: php_define
     kind: SECRET
     description: PHP constant with a password / secret style name (define('DB_PASSWORD', '...')).
-    pattern: '(?i)\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key)(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token)|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["'']'
+    pattern: '(?i)(?:\bdefine\s*\(\s*["''][\w.-]*?(?:(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))+\b["'']\s*,\s*["'']\d+["'']|\bdefine\s*\(\s*["''][\w.-]*?(?:(?:password|passwd|pwd|passphrase|secret|client_secret|api[_-]?key|(?:access|auth|private|refresh|session)[_-]?token|[_-]token|(?-i:[a-z0-9]Token))(?:[_-][A-Za-z0-9]+|(?-i:[A-Z][a-z0-9]+))*|(?:\b|[_-])pass|(?-i:[a-z0-9]Pass))\b["'']\s*,\s*["'']([^"'']{8,})["''])'
     group: 1
     allow: *code_values
