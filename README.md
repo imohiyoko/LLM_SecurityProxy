@@ -66,6 +66,38 @@ llmsp rules test notes.txt    # what would be masked (nothing is stored or sent)
 A value that was masked once is masked everywhere afterwards, even without the
 context that first revealed it.
 
+### Sharing rulesets with a team
+
+Rulesets are plain files, so a team can keep them in a private repository and
+point every member's config at a checkout:
+
+```
+team-llmsp-rules/          # private repository, cloned by each member
+  org-hosts.yaml           # id: org/hosts
+  hosts.txt                # values_file of org/hosts, resolved next to it
+  org-fields.yaml          # id: org/fields
+```
+
+```yaml
+# each member's config.yaml
+rulesets:
+  dirs: [~/src/team-llmsp-rules]
+```
+
+- Only the rules are shared. `config.yaml` is per user (there is no include),
+  so each member adds the `dirs` entry and their own `enable` / `disable`.
+- Use a namespaced ruleset ID (`org/...`). Two user ruleset files with the
+  same ID are an error, across `rules.d` and every directory in `dirs`, so
+  personal additions need their own ID (`me/...`).
+- A shared ruleset can ship with `default: false` and be turned on per user
+  with `rulesets.enable`. A shared file with a built-in ID (`builtin/pii`)
+  replaces that built-in ruleset for everyone who uses it.
+- Rules are read at start-up. After pulling changes, restart llmsp, then check
+  with `llmsp rules list` (state and source of every rule) and
+  `llmsp rules test FILE`.
+- Never share `master.key` or `llmsp.db`. They hold the real values masked on
+  one machine and are specific to it.
+
 ## How it works
 
 See [docs/design.md](docs/design.md). In short:
