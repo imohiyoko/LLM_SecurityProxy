@@ -30,3 +30,50 @@ rules:
     # its own and the longer valid match wins.
     pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|35\d{2}|6011|65\d{2})(?:[ -]\d{4}){3}[ -]\d{3}\b'
     validators: [luhn]
+
+  - id: name
+    kind: NAME
+    description: >
+      Whole value of a field that holds a person's name, in JSON, YAML,
+      logfmt, env, code, XML and logs (userName: ..., "display_name": "...",
+      FULL_NAME='...', Full Name: ...), quoted values with spaces included.
+      The field name must be one of the keys once normalised, with or without
+      word breaks (userName = user_name = USERNAME); a longer name
+      (billing_user_name) or a bare name / user / login does not match. Add
+      your own field names with a `keys:` rule.
+    keys:
+      - user_name
+      - full_name
+      - display_name
+      - first_name
+      - last_name
+      - middle_name
+      - family_name
+      - given_name
+      - nickname
+      - real_name
+      - first_name_kana
+      - last_name_kana
+      - full_name_kana
+      - customer_name
+      - contact_name
+      - employee_name
+      - author_name
+      - 氏名
+    # Each entry matches the whole value. Calls, templates, expressions and
+    # type annotations are already skipped by the field scanner.
+    allow:
+      - '^__LLMSP_[A-Z0-9_]{1,32}?_[0-9a-f]{12}__$'                           # already masked
+      - '^[^\pL]*$'                                                          # no letters: ids, dates, "-"
+      # Placeholder words and system or service accounts. Lower case (and the
+      # usual spellings of constants) only, so Root, Guest or Test as a name
+      # is still masked.
+      - '^(?:true|false|True|False|TRUE|FALSE|yes|no|null|Null|NULL|nil|None|none|undefined|unknown|n/?a|N/?A|tbd|TBD|empty|anonymous|anon|guest|admin|administrator|root|system|test|user|username|Username|name|default|nobody|me|postgres|mysql|ubuntu|ec2-user|www-data|nginx|git|jenkins|runner|deploy)$'
+      # A reference to another field, not a name: first_name, user.name,
+      # $userName, currentUser. It must contain name or user and have the
+      # shape of an identifier (a separator or a camelCase hump), so that
+      # Hauser or Namekawa is still masked.
+      - '^(?:[\w$@:>-]*[_.$@:>-][\w.$@:>-]*(?i:name|user)[\w.$@:>-]*|[\w.$@:>-]*(?i:name|user)[\w.$@:>-]*[_.$@:>-][\w.$@:>-]*|[a-z]\w*(?:Name|User)\w*|(?:name|user)[A-Z]\w*)$'
+      - '^(?:[$#]\{.*\}|\{\{.*\}\}|%\([\w.]+\)[sdr])$'                        # a quoted template: "{{ .Name }}", "${NAME}"
+      - '^(?:str|string|String|int|integer|bool|boolean|any|object|text|char|varchar|nvarchar)(?:\(\d+\)|\[\]|\?)?$' # a quoted type name
+      - '(?i)^(?:x+|\*+|\.+|<[^>]*>|\[[^\]]*\]|changeme|placeholder|redacted|your[_ -].*)$'

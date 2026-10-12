@@ -211,6 +211,10 @@ func TestInvalidRulesets(t *testing.T) {
 		"group and groups":  "id: a/b\nrules:\n  - {id: r, kind: K, pattern: '(x)|(y)', group: 1, groups: [2]}\n",
 		"groups no pattern": "id: a/b\nrules:\n  - {id: r, kind: K, values: [x], groups: [1]}\n",
 		"unknown validator": "id: a/b\nrules:\n  - {id: r, kind: K, pattern: x, validators: [nope]}\n",
+		"keys and pattern":  "id: a/b\nrules:\n  - {id: r, kind: K, pattern: x, keys: [user_name]}\n",
+		"keys and values":   "id: a/b\nrules:\n  - {id: r, kind: K, values: [x], keys: [user_name]}\n",
+		"keys and group":    "id: a/b\nrules:\n  - {id: r, kind: K, keys: [user_name], group: 1}\n",
+		"key without words": "id: a/b\nrules:\n  - {id: r, kind: K, keys: [user_name, '--']}\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -234,12 +238,104 @@ func TestInvalidRulesets(t *testing.T) {
 	}
 }
 
+func TestBuiltinName(t *testing.T) {
+	d := detector(t, nil, Selection{})
+	const rule = "builtin/pii:name"
+	for _, c := range []struct{ text, want string }{
+		{`{"userName": "Jane Doe", "id": 42}`, "Jane Doe"},
+		{`{"display_name":"Jane \"JD\" Doe"}`, `Jane \"JD\" Doe`},
+		{"user_name: Jane Doe\n", "Jane Doe"},
+		{`level=info USER_NAME='Jane Doe' msg=login`, "Jane Doe"},
+		{`self.first_name = "Jane"`, "Jane"},
+		{`:full_name => "Jane Doe"`, "Jane Doe"},
+		{"lastName: 山田\n", "山田"},
+		{`FAMILY-NAME=Doe`, "Doe"},
+		// Names that contain user / name, or equal an account word in
+		// another case.
+		{`last_name: Hauser`, "Hauser"},
+		{`family_name: Namekawa`, "Namekawa"},
+		{`last_name: Root`, "Root"},
+		// One-word spellings, labels, flags, XML, headers' X- form aside.
+		{`displayname=Jane`, "Jane"},
+		{`GIVENNAME=Jane`, "Jane"},
+		{"Full Name: Jane Doe\n", "Jane Doe"},
+		{`--display-name="Jane Doe"`, "Jane Doe"},
+		{`$row['last_name'] = 'Doe';`, "Doe"},
+		{`<first_name>Jane</first_name>`, "Jane"},
+		{"氏名：山田太郎\n", "山田太郎"},
+		{`-e "FULL_NAME=Jane Doe"`, "Jane Doe"},
+		{"last_name: O'Brien\n", "O'Brien"},
+		{`user_name= display_name="Jane Doe"`, "Jane Doe"},
+		{`first_name = u'Jane'`, "Jane"},
+	} {
+		if got := found(d, c.text)[rule]; got != c.want {
+			t.Errorf("%q: got %q, want %q", c.text, got, c.want)
+		}
+	}
+	for _, text := range []string{
+		`name: build`,
+		`user: root`,
+		`login=jdoe`,
+		`billing_user_name: Acme Corp`,
+		`userNameKana: ジェーン`,
+		`username: root`,
+		`username=postgres`,
+		`user_name: ec2-user`,
+		`user_name: null`,
+		`display_name: ""`,
+		`user_name: 12345`,
+		`user_name = request.user_name`,
+		`first_name = form.cleaned_data["first_name"]`,
+		`def f(first_name: str = None):`,
+		`userName: string;`,
+		`full_name = get_full_name(user)`,
+		`user_name: ${USER_NAME}`,
+		`display_name: "{{ .Name }}"`,
+		`user_name: <your name>`,
+	} {
+		if got, ok := found(d, text)[rule]; ok {
+			t.Errorf("%q: masked %q", text, got)
+		}
+	}
+}
+
+func TestUserKeysRule(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "org.yaml", `
+id: org/fields
+rules:
+  - id: customer
+    kind: CUSTOMER
+    keys: [customer_code, client.id]
+    allow: ['^0+$']
+`)
+	d := detector(t, []string{dir}, Selection{})
+	// Code is skipped for every field rule, not only the builtin one.
+	for _, text := range []string{
+		`customer_code = lookup(order)`,
+		`customer_code: ${CODE}`,
+		`customer_code = prefix + suffix`,
+		`customerCode: string;`,
+	} {
+		if got := found(d, text); len(got) != 0 {
+			t.Errorf("%q: %v", text, got)
+		}
+	}
+	got := found(d, `{"customerCode": "C-1029 east"} CLIENT_ID=0000`)
+	if got["org/fields:customer"] != "C-1029 east" {
+		t.Errorf("keys: %v", got)
+	}
+	if got := found(d, `client-id=0000`); len(got) != 0 {
+		t.Errorf("allow ignored: %v", got)
+	}
+}
+
 // The documented example must stay loadable.
 func TestExampleRuleset(t *testing.T) {
 	d := detector(t, []string{"../../examples/rules.d"}, Selection{Enable: []string{"example/org:member_number"}})
-	text := "db.internal.example " + "deploy-token: " + strings.Repeat("ab12", 4) + " M-123456789012"
+	text := "db.internal.example " + "deploy-token: " + strings.Repeat("ab12", 4) + " M-123456789012 customerCode=C-1"
 	got := found(d, text)
-	for _, id := range []string{"example/org:hosts", "example/org:ticket_secret", "example/org:member_number"} {
+	for _, id := range []string{"example/org:hosts", "example/org:ticket_secret", "example/org:member_number", "example/org:customer_code"} {
 		if got[id] == "" {
 			t.Errorf("%s did not match: %v", id, got)
 		}

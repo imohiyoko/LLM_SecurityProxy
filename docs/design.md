@@ -61,12 +61,15 @@ rules:
     case_insensitive: true
   - id: code
     kind: PROJECT
-    pattern: '...'            # RE2; exactly one of pattern / values
+    pattern: '...'            # RE2; exactly one of pattern / values / keys
     group: 1                  # mask one capture group only
     # groups: [1, 2]          # or: the first of these groups that matched
     allow: ['...']            # values matching these are not masked
     validators: [luhn]        # named checks a regexp cannot express
     enabled: true
+  - id: customer
+    kind: CUSTOMER
+    keys: [customer_name]     # field names: mask the whole value of the field
 ```
 
 - Built-in rulesets are embedded files in the same format
@@ -82,6 +85,51 @@ rules:
   regular expressions are awkward to escape in them, and they live in project
   directories that agents read and that tend to get committed.
 
+### Field rules
+
+A rule with `keys:` masks the whole value assigned to a field with one of
+those names. It is for data that has no recognisable format, such as
+person names (`builtin/pii:name`), where only the field name says what the
+value is.
+
+- Names are compared after normalisation: split on any character that is not
+  a letter or digit and on camelCase boundaries, lower-cased, and joined
+  without the breaks. `userName`, `user_name`, `user-name`, `USER_NAME`,
+  `user.name` and `username` all compare equal. The whole name must match a
+  key; a longer name (`billing_user_name`, `userNameKana`) does not. A dotted
+  path also matches on its last segment (`self.user_name`,
+  `profile.displayName`).
+- In text, a field is a name of letters, digits, `_ . -` in any script,
+  optionally quoted (`"name"`, `'name'`, `\"name\"`), a Ruby symbol, a
+  command-line flag (`--name`) or a subscript (`['name']`), followed by `:`,
+  `=`, `:=`, `=>` or a full-width colon. A quote before the name that does
+  not close it belongs to an enclosing string (`-e "FULL_NAME=..."`). A label
+  of two to four words at the start of a line (`Full Name:`) and a one-line
+  XML element (`<first_name>...</first_name>`) are fields too. This covers
+  JSON, YAML, logfmt, env and shell, HTML attributes, forms and most
+  languages' assignments and keyword arguments.
+- A quoted value runs to its closing quote on the same line, spaces,
+  backslash escapes and doubled quotes (`'O''Brien'`) included; a string
+  prefix (`u'..'`, `f".."`) is skipped. An unquoted value runs to the end of
+  the line, and stops earlier at a tab, a quote (not an apostrophe inside a
+  word: `O'Brien`), `=` or one of ``< > | ` `` and an unbalanced `) ] }`; at a
+  space, `,`, `;` or `&` followed by another `name=` / `name:`; and at ` #`.
+  Running on rather than stopping at a space masks free text that follows a
+  name instead of leaking its second word.
+- No value is read when the separator is followed by another field
+  (`user_name= display_name=...`), a nested structure, or a YAML block,
+  anchor, alias or tag. Unquoted values that are code are skipped for every
+  field rule: calls and subscripts, templates and variables, expressions,
+  type annotations (`user_name: str = ...`). Quoted values are always data.
+- In request JSON, a string member of an object inside tool arguments is
+  matched by its key directly, without reading text. Header names (without
+  an `X-` prefix) and query keys are used the same way for their values.
+- `allow` and `validators` apply to the whole value. The builtin allow list
+  skips values that are not names: no letters at all, a lone placeholder,
+  lower-case placeholder words and system or service accounts (`null`,
+  `root`, `postgres`, ...), and references to other fields (`first_name`,
+  `request.user.name`, `currentUser`).
+
 ### Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value
@@ -89,13 +137,38 @@ rules:
    placeholder is protected only if the store issued its ID under exactly
    that kind; any other placeholder-shaped text is masked as a whole, since
    its kind segment can hide a token that detectors miss there.
-2. Resolve overlaps: protected first, then earliest, then longest.
-3. Skip allowlisted values; store the rest and substitute placeholders.
-4. Record the IDs substituted; they are the request's restore scope.
+2. Drop allowlisted values, so that an allowed span cannot hide a secret
+   inside it.
+3. Resolve overlaps: protected first, then earliest, then longest. Field
+   values come last: each is masked in the pieces the other spans leave of
+   it. A field value can stop inside a secret (at the `=` of a URL password)
+   or contain a placeholder; masking it whole would drop the other span and
+   leave the secret's tail in plaintext. A field value read from text is
+   also split at backslash escapes, so its pieces restore anywhere without
+   extra backslashes, and it is stored unescaped as well, so the known-value
+   pass finds it in decoded text.
+4. Store the spans and substitute placeholders.
+5. Record the IDs substituted; they are the request's restore scope.
 
 The known-value pass matters. After a response is unmasked, the agent's history
 contains the real value, often without the context (`password=`) that a
 detector needs. Exact matching against stored values masks it again.
+
+Values found by field rules go through the same pass with the same policy: at
+least 6 bytes, matched anywhere, persisted in the store like every other
+value. So a name seen once in a field (`"userName": "Jane Doe"`) is masked in
+later free text (`Jane Doe joined the call`), which is the point of field
+rules. The trade-offs are accepted deliberately:
+
+- A short name (`Bob`) is masked in its field but not in free text.
+- A name of 6 bytes or more is masked inside longer words too (`Jordan` in
+  `Jordanian`). A two-character CJK name is already 6 bytes.
+- Masking a common word everywhere is visible to the model as a placeholder.
+  Account names that are common words (`root`, `postgres`, `deploy`) are on
+  the builtin allow list for this reason.
+- Learning a value changes how earlier history is masked on the next turn,
+  so the cached prompt prefix changes once. This holds for every learned
+  value, not only field-derived ones.
 
 Long strings are memoized because history is resent on every turn. The cache
 is invalidated whenever the set of known values changes, so a newly learned
@@ -155,5 +228,6 @@ into memory at start-up.
 - OpenAI Chat Completions / Responses (Codex, Cline). Function call
   `arguments` are JSON strings and need JSON-escaped restoration.
 - OS keychain for the master key; retention / expiry of stored values.
-- NER-based detection (names, organisations).
+- NER-based detection (names, organisations) in free text. Names are only
+  found by their field name, and in free text once seen in a field.
 - A CLI to list, look up and purge stored values.

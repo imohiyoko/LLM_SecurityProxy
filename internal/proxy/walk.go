@@ -62,23 +62,25 @@ func opaqueBlock(m map[string]any) bool {
 // If a restored key would collide with another key of the same object, the
 // key is kept as it was, so no member is dropped.
 func walkStrings(v any, fn func(string) (string, error)) (any, error) {
-	return walk(v, fn, false, false)
+	return walk(v, fn, nil, false, false)
 }
 
 // maskStrings is walkStrings for the request side, where a key that should be
 // masked is never forwarded as is: a masked key that would collide gets a
-// " (n)" suffix instead (see rekey).
-func maskStrings(v any, fn func(string) (string, error)) (any, error) {
-	return walk(v, fn, false, true)
+// " (n)" suffix instead (see rekey). A string member of an object inside
+// tool arguments is passed to field with its key instead of to fn, so that
+// it can be masked by its field name.
+func maskStrings(v any, fn func(string) (string, error), field func(key, value string) (string, error)) (any, error) {
+	return walk(v, fn, field, false, true)
 }
 
-func walk(v any, fn func(string) (string, error), free, strict bool) (any, error) {
+func walk(v any, fn func(string) (string, error), field func(key, value string) (string, error), free, strict bool) (any, error) {
 	switch t := v.(type) {
 	case string:
 		return fn(t)
 	case []any:
 		for i, e := range t {
-			nv, err := walk(e, fn, free, strict)
+			nv, err := walk(e, fn, field, free, strict)
 			if err != nil {
 				return nil, err
 			}
@@ -93,7 +95,13 @@ func walk(v any, fn func(string) (string, error), free, strict bool) (any, error
 			if !free && skipKeys[k] && !textData(k, t) {
 				continue
 			}
-			nv, err := walk(e, fn, free || toolArgs(k, t), strict)
+			var nv any
+			var err error
+			if str, ok := e.(string); ok && free && field != nil {
+				nv, err = field(k, str)
+			} else {
+				nv, err = walk(e, fn, field, free || toolArgs(k, t), strict)
+			}
 			if err != nil {
 				return nil, err
 			}

@@ -27,6 +27,13 @@ rules:
     allow:
       - '^0+$'
 
+  # Field names. The whole value of a field with one of these names is
+  # masked, in JSON, YAML, logfmt, env and code alike. Names match however
+  # they are spelled: customerCode, customer_code, CUSTOMER-CODE.
+  - id: customer_code
+    kind: CUSTOMER
+    keys: [customer_code, account_holder]
+
   # A rule can be defined but left off, and enabled later from config.yaml
   # with `rulesets.enable: [example/org:member_number]`.
   # `validators` adds named checks a regexp cannot express (available: luhn).

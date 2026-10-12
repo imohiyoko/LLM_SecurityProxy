@@ -411,6 +411,53 @@ func TestToolInputKeysMasked(t *testing.T) {
 	}
 }
 
+// A name in a tool input field is masked by its key, restored in the
+// response, and masked again in a later request where it appears without a
+// field name.
+func TestFieldNameMaskedEndToEnd(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		ph := placeholder.Pattern.FindString(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"content":[{"type":"text","text":"created %s"}]}`, ph)
+	})
+	req, _ := http.NewRequest(http.MethodPost, f.proxy.URL+"/v1/messages?user_name=Jane%20Roe", strings.NewReader(
+		`{"model":"m","messages":[{"role":"assistant","content":[`+
+			`{"type":"tool_use","id":"tu_1","name":"crm","input":{"contact":{"displayName":"Jane Doe","plan":"pro"}}}]}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Name", "Joan Poe")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	sent := string(<-f.received)
+	r := <-f.requests
+	if strings.Contains(sent, "Jane") || !strings.Contains(sent, `"displayName":"__LLMSP_NAME_`) || !strings.Contains(sent, `"plan":"pro"`) {
+		t.Fatalf("field not masked: %s", sent)
+	}
+	if strings.Contains(r.URL.RawQuery, "Jane") || strings.Contains(r.URL.RawQuery, "Roe") {
+		t.Fatalf("query field not masked: %s", r.URL.RawQuery)
+	}
+	if h := r.Header.Get("X-User-Name"); !strings.HasPrefix(h, "__LLMSP_NAME_") {
+		t.Fatalf("header field not masked: %s", h)
+	}
+	if !strings.Contains(string(out), "created Jane Doe") {
+		t.Fatalf("not restored: %s", out)
+	}
+
+	resp, err = http.Post(f.proxy.URL+"/v1/messages", "application/json", strings.NewReader(
+		`{"model":"m","messages":[{"role":"user","content":"Jane Doe joined the call"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	<-f.requests
+	if sent := string(<-f.received); strings.Contains(sent, "Jane Doe") || !strings.Contains(sent, "__LLMSP_NAME_") {
+		t.Fatalf("known name not masked later: %s", sent)
+	}
+}
+
 // The Responses API puts the whole conversation under a top-level "input".
 // That is not a tool argument: protocol fields and reasoning items in it must
 // still pass through untouched, while message text is masked.

@@ -5,6 +5,8 @@ package detect
 
 import (
 	"regexp"
+
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/field"
 )
 
 // Match is a sensitive span in the input, as byte offsets.
@@ -13,6 +15,9 @@ type Match struct {
 	Kind       string
 	// Rule is the full ID of the rule that matched, e.g. "builtin/pii:email".
 	Rule string
+	// Field is set for a field rule match: the whole value of a field, which
+	// may contain other matches. Callers give it the lowest priority.
+	Field bool
 }
 
 // Rule is a single compiled detector.
@@ -21,7 +26,11 @@ type Rule struct {
 	ID string
 	// Kind is the label written into the placeholder.
 	Kind string
-	Re   *regexp.Regexp
+	// Re is the pattern; nil when Keys is set.
+	Re *regexp.Regexp
+	// Keys, when set, makes this a field rule: it matches the whole value
+	// of any field whose name is in the set (see package field).
+	Keys *field.KeySet
 	// Group selects the capture group to mask; 0 masks the whole match.
 	Group int
 	// Groups, when set, replaces Group: the first listed group that took
@@ -49,7 +58,21 @@ func (d *Detector) Rules() []Rule { return d.rules }
 // Find returns every match of every rule. Matches may overlap; callers resolve.
 func (d *Detector) Find(s string) []Match {
 	var out []Match
+	var fields []field.Field
+	scanned := false
 	for _, r := range d.rules {
+		if r.Keys != nil {
+			if !scanned {
+				fields, scanned = field.Find(s), true
+			}
+			for _, f := range fields {
+				if m, ok := r.field(f.Key, s[f.Start:f.End]); ok {
+					m.Start, m.End = f.Start, f.End
+					out = append(out, m)
+				}
+			}
+			continue
+		}
 		for _, idx := range r.Re.FindAllStringSubmatchIndex(s, -1) {
 			g := r.Group
 			for _, c := range r.Groups {
@@ -68,6 +91,32 @@ func (d *Detector) Find(s string) []Match {
 		}
 	}
 	return out
+}
+
+// Field returns the field rules that match value as the value of a field
+// named key, as whole-value matches. It is for values whose field name is
+// known from structure (a JSON object member) rather than read from text.
+func (d *Detector) Field(key, value string) []Match {
+	if value == "" {
+		return nil
+	}
+	k := field.NewKey(key)
+	var out []Match
+	for _, r := range d.rules {
+		if m, ok := r.field(k, value); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// field matches value as the value of a field with key k: the whole value,
+// from 0 to len(value).
+func (r *Rule) field(k field.Key, value string) (Match, bool) {
+	if r.Keys == nil || !r.Keys.Has(k) || !r.accepts(value) {
+		return Match{}, false
+	}
+	return Match{End: len(value), Kind: r.Kind, Rule: r.ID, Field: true}, true
 }
 
 func (r *Rule) accepts(v string) bool {
