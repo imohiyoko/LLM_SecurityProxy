@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -125,6 +127,8 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 				nv, err = field(k, str)
 			case isStr && !free && k == "arguments" && args != nil:
 				nv, err = args(str)
+			case isStr && !free && k == "arguments" && field != nil:
+				nv, err = maskArguments(str, fn, field)
 			default:
 				nv, err = walk(e, fn, field, args, free || toolArgs(k, t), strict)
 			}
@@ -200,4 +204,35 @@ func textData(key string, m map[string]any) bool {
 	}
 	mt, _ := m["media_type"].(string)
 	return strings.HasPrefix(mt, "text/")
+}
+
+// maskArguments masks OpenAI function call arguments, JSON source in a
+// string. A value restored into them was JSON-escaped (a quote as \"), and
+// the client sends the arguments back verbatim on the next turn, so the
+// values are matched decoded: the escaped form of a known value would not
+// match it. Arguments are re-encoded only if something in them was masked.
+// Arguments that are not JSON are masked as text.
+func maskArguments(raw string, fn func(string) (string, error), field func(key, value string) (string, error)) (string, error) {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) != nil || dec.More() {
+		return fn(raw)
+	}
+	before, err := marshal(v)
+	if err != nil {
+		return fn(raw)
+	}
+	masked, err := walk(v, fn, field, nil, true, true)
+	if err != nil {
+		return "", err
+	}
+	after, err := marshal(masked)
+	if err != nil {
+		return "", err
+	}
+	if bytes.Equal(before, after) {
+		return fn(raw)
+	}
+	return fn(string(after))
 }

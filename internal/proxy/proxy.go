@@ -306,8 +306,14 @@ func firstInstructions(msgs []any) (map[string]any, bool) {
 
 // injectResponsesNotice puts the notice first in the input of an OpenAI
 // Responses API request, as a developer message. instructions is left alone:
-// some backends accept only the client's own instructions there.
+// some backends accept only the client's own instructions there. A request
+// that continues a conversation kept by the server (previous_response_id,
+// conversation) gets none: the server already holds the notice from the
+// first turn, and every further one would pile up in its context.
 func injectResponsesNotice(m map[string]any) {
+	if m["previous_response_id"] != nil || m["conversation"] != nil {
+		return
+	}
 	switch in := m["input"].(type) {
 	case []any:
 		note := map[string]any{

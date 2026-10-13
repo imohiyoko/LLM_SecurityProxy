@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -14,26 +13,14 @@ import (
 
 // sseState tracks one streamed response: an Anthropic message, an OpenAI
 // chat completion or an OpenAI Responses API response. The formats do not
-// share event shapes, so one state handles all three.
+// share event shapes, so one state handles all three; chat and resp are
+// created on the first event of their format.
 type sseState struct {
 	res    unmask.Resolver
 	blocks map[int]*blockState
-
-	// OpenAI Chat Completions: one stream per choice content and per tool
-	// call's arguments. last is the latest chunk, the template for a chunk
-	// that flushes what is still held when the stream ends.
-	chat     map[chatKey]*unmask.Stream
-	chatLast map[string]any
-
-	// OpenAI Responses API: one stream per delta source, by event key.
-	resp map[string]*unmask.Stream
-
-	// restored outside streams: full values in done events and items.
-	extra int
+	chat   *chatState
+	resp   *respState
 }
-
-// chatKey: tool is -1 for the message content.
-type chatKey struct{ choice, tool int }
 
 type blockState struct {
 	deltaType string // "text_delta" or "input_json_delta"
@@ -45,7 +32,7 @@ type blockState struct {
 // placeholders in text and tool input deltas. Thinking deltas are left as is:
 // thinking blocks are signed and come back verbatim in the next request.
 func streamSSE(w http.ResponseWriter, body io.Reader, res unmask.Resolver) (int, error) {
-	st := &sseState{res: res, blocks: map[int]*blockState{}, chat: map[chatKey]*unmask.Stream{}, resp: map[string]*unmask.Stream{}}
+	st := &sseState{res: res, blocks: map[int]*blockState{}}
 	flusher, _ := w.(http.Flusher)
 	r := bufio.NewReaderSize(body, 64<<10)
 	var event [][]byte
@@ -71,6 +58,11 @@ func streamSSE(w http.ResponseWriter, body io.Reader, res unmask.Resolver) (int,
 					return st.count(), werr
 				}
 			}
+			// A stream can end without [DONE] or a done event; what is
+			// still held goes out rather than being dropped.
+			if werr := st.flushOpenAI(w); werr != nil {
+				return st.count(), werr
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -83,17 +75,29 @@ func streamSSE(w http.ResponseWriter, body io.Reader, res unmask.Resolver) (int,
 }
 
 func (st *sseState) count() int {
-	n := st.extra
+	n := 0
 	for _, b := range st.blocks {
 		n += b.stream.Count
 	}
-	for _, s := range st.chat {
-		n += s.Count
+	if st.chat != nil {
+		n += st.chat.count()
 	}
-	for _, s := range st.resp {
-		n += s.Count
+	if st.resp != nil {
+		n += st.resp.count()
 	}
 	return n
+}
+
+func (st *sseState) flushOpenAI(w io.Writer) error {
+	if st.chat != nil {
+		if err := st.chat.flush(w); err != nil {
+			return err
+		}
+	}
+	if st.resp != nil {
+		return st.resp.flushAll(w)
+	}
+	return nil
 }
 
 // writeEvent processes one event (its lines, without the blank terminator).
@@ -116,18 +120,24 @@ func (st *sseState) writeEvent(w io.Writer, lines [][]byte) error {
 	}
 	var msg map[string]any
 	if data == nil || json.Unmarshal(data, &msg) != nil {
-		if string(data) == "[DONE]" { // end of an OpenAI chat stream
-			if err := st.flushChat(w); err != nil {
+		if string(data) == "[DONE]" && st.chat != nil { // end of an OpenAI chat stream
+			if err := st.chat.flush(w); err != nil {
 				return err
 			}
 		}
 		return writeRaw(w, lines)
 	}
 	if _, ok := msg["choices"].([]any); ok {
-		return st.chatChunk(w, name, msg)
+		if st.chat == nil {
+			st.chat = &chatState{res: st.res, streams: map[chatKey]*unmask.Stream{}}
+		}
+		return st.chat.chunk(w, lines, name, msg)
 	}
 	if t, _ := msg["type"].(string); strings.HasPrefix(t, "response.") {
-		return st.responsesEvent(w, lines, name, t, msg)
+		if st.resp == nil {
+			st.resp = &respState{res: st.res, streams: map[respKey]*unmask.Stream{}}
+		}
+		return st.resp.event(w, lines, name, t, msg)
 	}
 
 	switch msg["type"] {
@@ -217,189 +227,4 @@ func writeJSON(w io.Writer, name string, msg map[string]any) error {
 	buf.WriteString("\n\n")
 	_, err = w.Write(buf.Bytes())
 	return err
-}
-
-// chatChunk restores an OpenAI chat.completion.chunk: choices[].delta.content
-// and the arguments of choices[].delta.tool_calls[]. When a choice finishes,
-// what its streams still hold is added to the same chunk, before the client
-// reads finish_reason.
-func (st *sseState) chatChunk(w io.Writer, name string, msg map[string]any) error {
-	st.chatLast = msg
-	choices, _ := msg["choices"].([]any)
-	for _, c := range choices {
-		choice, _ := c.(map[string]any)
-		ci, ok := index(choice)
-		if !ok {
-			continue
-		}
-		delta, _ := choice["delta"].(map[string]any)
-		if delta == nil {
-			delta = map[string]any{}
-		}
-		if text, ok := delta["content"].(string); ok {
-			delta["content"] = st.chatStream(chatKey{ci, -1}, unmask.Identity).Write(text)
-		}
-		calls, _ := delta["tool_calls"].([]any)
-		for _, tc := range calls {
-			call, _ := tc.(map[string]any)
-			ti, ok := index(call)
-			fn, _ := call["function"].(map[string]any)
-			if !ok || fn == nil {
-				continue
-			}
-			if args, ok := fn["arguments"].(string); ok {
-				fn["arguments"] = st.chatStream(chatKey{ci, ti}, unmask.JSONString).Write(args)
-			}
-		}
-		if choice["finish_reason"] != nil {
-			st.flushChoice(ci, delta)
-		}
-		if len(delta) > 0 {
-			choice["delta"] = delta
-		}
-	}
-	return writeJSON(w, name, msg)
-}
-
-func (st *sseState) chatStream(k chatKey, esc unmask.Escaper) *unmask.Stream {
-	s := st.chat[k]
-	if s == nil {
-		s = unmask.NewStream(st.res, esc)
-		st.chat[k] = s
-	}
-	return s
-}
-
-// flushChoice appends what choice ci still holds to delta.
-func (st *sseState) flushChoice(ci int, delta map[string]any) {
-	for k, s := range st.chat {
-		if k.choice != ci {
-			continue
-		}
-		rest := s.Flush()
-		if rest == "" {
-			continue
-		}
-		if k.tool < 0 {
-			text, _ := delta["content"].(string)
-			delta["content"] = text + rest
-			continue
-		}
-		calls, _ := delta["tool_calls"].([]any)
-		delta["tool_calls"] = append(calls, map[string]any{
-			"index":    k.tool,
-			"function": map[string]any{"arguments": rest},
-		})
-	}
-}
-
-// flushChat emits, before [DONE], what choices that never finished still hold.
-func (st *sseState) flushChat(w io.Writer) error {
-	var choices []any
-	seen := map[int]bool{}
-	for k := range st.chat {
-		if seen[k.choice] {
-			continue
-		}
-		seen[k.choice] = true
-		delta := map[string]any{}
-		st.flushChoice(k.choice, delta)
-		if len(delta) > 0 {
-			choices = append(choices, map[string]any{"index": k.choice, "delta": delta})
-		}
-	}
-	if len(choices) == 0 {
-		return nil
-	}
-	chunk := map[string]any{}
-	for _, k := range []string{"id", "object", "created", "model"} {
-		if v, ok := st.chatLast[k]; ok {
-			chunk[k] = v
-		}
-	}
-	chunk["choices"] = choices
-	return writeJSON(w, "", chunk)
-}
-
-// responsesDelta describes a Responses API delta event and its done event.
-type responsesDelta struct {
-	done  string         // the matching done event type
-	field string         // where the done event carries the full value
-	esc   unmask.Escaper // how a restored value is written into the value
-}
-
-var responsesDeltas = map[string]responsesDelta{
-	"response.output_text.delta":             {"response.output_text.done", "text", unmask.Identity},
-	"response.refusal.delta":                 {"response.refusal.done", "refusal", unmask.Identity},
-	"response.function_call_arguments.delta": {"response.function_call_arguments.done", "arguments", unmask.JSONString},
-	"response.custom_tool_call_input.delta":  {"response.custom_tool_call_input.done", "input", unmask.Identity},
-}
-
-// responsesEvent restores an OpenAI Responses API event. Deltas go through a
-// stream that holds back a partial placeholder; the done event first gets
-// what is still held as one more delta, then its full value restored. Items,
-// content parts and the final response are restored whole; reasoning items
-// are left as they are.
-func (st *sseState) responsesEvent(w io.Writer, lines [][]byte, name, typ string, msg map[string]any) error {
-	if d, ok := responsesDeltas[typ]; ok {
-		text, _ := msg["delta"].(string)
-		k := responsesKey(typ, msg)
-		s := st.resp[k]
-		if s == nil {
-			s = unmask.NewStream(st.res, d.esc)
-			st.resp[k] = s
-		}
-		out := s.Write(text)
-		if out == "" && text != "" {
-			return nil // held back; emitted with a later delta
-		}
-		msg["delta"] = out
-		return writeJSON(w, name, msg)
-	}
-	for dtyp, d := range responsesDeltas {
-		if d.done != typ {
-			continue
-		}
-		if s := st.resp[responsesKey(dtyp, msg)]; s != nil {
-			if rest := s.Flush(); rest != "" {
-				flush := map[string]any{"type": dtyp, "delta": rest}
-				for _, f := range []string{"item_id", "output_index", "content_index", "sequence_number"} {
-					if v, ok := msg[f]; ok {
-						flush[f] = v
-					}
-				}
-				evname := ""
-				if name != "" {
-					evname = dtyp
-				}
-				if err := writeJSON(w, evname, flush); err != nil {
-					return err
-				}
-			}
-		}
-		if v, ok := msg[d.field].(string); ok {
-			out, n := unmask.Replace(v, st.res, d.esc)
-			msg[d.field] = out
-			st.extra += n
-		}
-		return writeJSON(w, name, msg)
-	}
-	changed := false
-	for _, f := range []string{"item", "part", "response"} {
-		if v, ok := msg[f]; ok {
-			nv, n := restoreStrings(v, st.res)
-			msg[f] = nv
-			st.extra += n
-			changed = changed || n > 0
-		}
-	}
-	if !changed {
-		return writeRaw(w, lines)
-	}
-	return writeJSON(w, name, msg)
-}
-
-// responsesKey identifies the value a delta event belongs to.
-func responsesKey(typ string, msg map[string]any) string {
-	return fmt.Sprintf("%s|%v|%v|%v", typ, msg["item_id"], msg["output_index"], msg["content_index"])
 }

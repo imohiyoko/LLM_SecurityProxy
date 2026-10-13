@@ -47,7 +47,8 @@ extra CA bundle for TLS-inspecting proxies.
    (Anthropic), to a leading system or developer message or as a new first
    system message (Chat Completions), or as a first developer message in
    `input` (Responses; `instructions` is left alone, since some backends
-   accept only the client's own there).
+   accept only the client's own there; none when `previous_response_id` or
+   `conversation` is set, as the server keeps the first turn's).
 5. Forward.
 
 ### Rulesets
@@ -211,7 +212,10 @@ the next turn masks the string again with the value included.
   including object keys inside tool input, as the streaming path does. A
   restored key that would collide with another key is left as a placeholder.
   An OpenAI `arguments` member is JSON source in a string, so values restored
-  into it are JSON-string-escaped.
+  into it are JSON-string-escaped. On the request side `arguments` is decoded
+  and its values masked, then re-encoded only if something was masked: the
+  client sends restored arguments back verbatim, and a known value's escaped
+  form would not match it.
 - `text/event-stream`, Anthropic Messages: per content block, run a stream
   unmasker.
   - `text_delta`: restore as is.
@@ -223,16 +227,26 @@ the next turn masks the string again with the value included.
   - `thinking_delta` is not restored: the thinking block comes back verbatim in
     the next request and must still match its signature.
 - `text/event-stream`, OpenAI Chat Completions (`choices` in the data): one
-  stream unmasker per choice `delta.content` and per tool call
-  `function.arguments` (JSON-escaped). Held text is added to the chunk that
-  carries the choice's `finish_reason`, or sent in one more chunk before
-  `[DONE]`.
+  stream unmasker per choice `delta.content`, `delta.refusal`, tool call
+  `function.arguments` and legacy `function_call.arguments` (the last two
+  JSON-escaped). A choice or tool call without `index` is keyed by its
+  position. Held text is added to the chunk that carries the choice's
+  `finish_reason`, in key order, or sent in one more chunk before `[DONE]` or
+  at the end of the stream.
 - `text/event-stream`, OpenAI Responses (`response.*` events): one stream
-  unmasker per `*.delta` source (output text, refusal, function call
+  unmasker per `*.delta` source (output text, refusal, function and MCP call
   arguments, custom tool input). Before the matching `*.done` event, held text
   goes out as one more delta; the full value in the done event is restored
-  too. Items, content parts and the final response are restored whole, except
-  reasoning items.
+  too. Anything still held goes out before `response.completed`,
+  `.incomplete` or `.failed`, or at the end of the stream. Items, content parts
+  and the final response are restored whole. `sequence_number` is renumbered,
+  since held deltas are dropped and flush deltas added.
+  - Reasoning is left masked: reasoning items and every `*reasoning*` event.
+    The client sends reasoning items back, and the request side does not mask
+    them, so a restored summary would go upstream in plaintext.
+- An event with nothing restored is passed through byte for byte. The
+  restored count counts each placeholder once, though it appears in deltas,
+  the done event, the item and the final response.
 - IDs outside the request's scope, and unknown IDs, are left untouched.
 
 ## Storage
