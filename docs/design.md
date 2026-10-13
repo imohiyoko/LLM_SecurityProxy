@@ -217,8 +217,9 @@ the next turn masks the string again with the value included.
   client sends restored arguments back verbatim, and a known value's escaped
   form would not match it. Arguments that are not JSON are masked as text;
   for them, and for JSON source anywhere, the known-value pass also looks for
-  each value's JSON-escaped form, whose placeholder stands for the value
-  itself.
+  each value's JSON-escaped form. Its placeholder stands for the escaped text
+  matched, so restoring it gives back exactly what was written, in a string
+  literal or a shell command as much as in JSON.
 - `text/event-stream`, Anthropic Messages: per content block, run a stream
   unmasker.
   - `text_delta`: restore as is.
@@ -242,7 +243,8 @@ the next turn masks the string again with the value included.
   arguments, custom tool input). Before the matching `*.done` event, held text
   goes out as one more delta; the full value in the done event is restored
   too. A done event that lacks an index its deltas had is matched to the only
-  open stream of its type for the same item. Anything still held goes out before `response.completed`,
+  stream of its type for the same item that is still open and whose indexes
+  agree where both have one. Anything still held goes out before `response.completed`,
   `.incomplete` or `.failed`, or at the end of the stream. Items, content parts
   and the final response are restored whole. `sequence_number` is renumbered,
   since held deltas are dropped and flush deltas added.

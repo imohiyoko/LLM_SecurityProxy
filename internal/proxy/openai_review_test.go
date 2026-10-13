@@ -294,7 +294,7 @@ func TestResponsesRestoredCount(t *testing.T) {
 
 // Arguments that are not JSON (a model can produce those) are masked as
 // text; a known value in them is found in its escaped form too, and its
-// placeholder stands for the value itself.
+// placeholder stands for the escaped text it replaced.
 func TestInvalidJSONArgumentsMasked(t *testing.T) {
 	f := openaiFixture(t, func(w http.ResponseWriter, _, _ string) {
 		w.Header().Set("Content-Type", "application/json")
@@ -314,8 +314,8 @@ func TestInvalidJSONArgumentsMasked(t *testing.T) {
 	if strings.Contains(got, esc(quoted)) || ph == nil {
 		t.Fatalf("arguments = %q", got)
 	}
-	if v, _ := f.store.Resolve(ph[2]); v != quoted {
-		t.Errorf("placeholder stands for %q, want %q", v, quoted)
+	if v, _ := f.store.Resolve(ph[2]); v != esc(quoted) {
+		t.Errorf("placeholder stands for %q, want %q", v, esc(quoted))
 	}
 }
 
@@ -362,5 +362,42 @@ func TestChatStreamToolCallsWithoutIndexSeparate(t *testing.T) {
 	}
 	if args["a"] != `{"x":1} __LL` || args["b"] != `{"y":1}` {
 		t.Errorf("arguments = %q", args)
+	}
+}
+
+// A done event without deltas is not matched to another content index's
+// finished stream: its own restoration is counted.
+func TestResponsesDoneFallbackSkipsClosedStreams(t *testing.T) {
+	_, n := runSSE(t, true,
+		`{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"plain","sequence_number":1}`,
+		`{"type":"response.output_text.done","item_id":"m","output_index":0,"content_index":0,"text":"plain","sequence_number":2}`,
+		`{"type":"response.output_text.done","item_id":"m","output_index":0,"content_index":1,"text":"`+testPH+`","sequence_number":3}`)
+	if n != 1 {
+		t.Errorf("restored = %d, want 1", n)
+	}
+}
+
+// A known value matched in its escaped form, here in a string literal in
+// plain text, is restored as it was written, escapes included.
+func TestEscapedKnownValueRoundTrip(t *testing.T) {
+	// The placeholder stands for the escaped text, not for quoted, so the
+	// fixture passes it as the first one.
+	f := openaiFixture(t, func(w http.ResponseWriter, ph, _ string) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"`+esc(`echo "`)+ph+esc(`"`)+`"}}]}`)
+	})
+	cmd := `echo "` + esc(quoted) + `"`
+	out := post(t, f.proxy.URL+"/v1/chat/completions", map[string]any{
+		"model": "m", "messages": []any{map[string]any{"role": "user", "content": "run " + cmd}},
+	})
+	if sent := string(<-f.received); strings.Contains(sent, esc(esc(quoted))) {
+		t.Fatalf("escaped value not masked: %s", sent)
+	}
+	var resp struct {
+		Choices []struct{ Message struct{ Content string } }
+	}
+	json.Unmarshal([]byte(out), &resp)
+	if got := resp.Choices[0].Message.Content; got != cmd {
+		t.Errorf("content = %q, want %q", got, cmd)
 	}
 }

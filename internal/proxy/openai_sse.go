@@ -203,8 +203,9 @@ func (c *chatState) count() int {
 type respState struct {
 	res     unmask.Resolver
 	streams map[respKey]*unmask.Stream
-	order   []respKey // streams in creation order, for flushing at the end
-	named   bool      // events carry an event: line
+	order   []respKey        // streams in creation order, for flushing at the end
+	closed  map[respKey]bool // streams whose done event came
+	named   bool             // events carry an event: line
 
 	// sequence_number is renumbered: a held delta is dropped and a flush
 	// delta is added, so the upstream numbers would have gaps and repeats.
@@ -298,6 +299,7 @@ func (r *respState) event(w io.Writer, lines [][]byte, name, typ string, msg map
 		d := respDeltas[dtyp]
 		k, s := r.doneStream(dtyp, msg)
 		if s != nil {
+			r.closed[k] = true
 			if err := r.flushStream(w, k, s); err != nil {
 				return err
 			}
@@ -340,8 +342,9 @@ func (r *respState) event(w io.Writer, lines [][]byte, name, typ string, msg map
 }
 
 // doneStream finds the stream a done event closes: by its full key or, if a
-// backend sent the indexes on only one of the delta and done events, the
-// only open stream of that type for the same item.
+// backend sent an index on only one of the delta and done events, the only
+// open stream of that type for the same item whose indexes agree where both
+// have one.
 func (r *respState) doneStream(dtyp string, msg map[string]any) (respKey, *unmask.Stream) {
 	k := newRespKey(dtyp, msg)
 	if s := r.streams[k]; s != nil || k.item == "" {
@@ -349,8 +352,9 @@ func (r *respState) doneStream(dtyp string, msg map[string]any) (respKey, *unmas
 	}
 	var found respKey
 	n := 0
+	agree := func(a, b int) bool { return a == b || a < 0 || b < 0 }
 	for _, o := range r.order {
-		if o.typ == dtyp && o.item == k.item {
+		if o.typ == dtyp && o.item == k.item && !r.closed[o] && agree(o.output, k.output) && agree(o.content, k.content) {
 			found = o
 			n++
 		}

@@ -135,7 +135,7 @@ func (st *sseState) writeEvent(w io.Writer, lines [][]byte) error {
 	}
 	if t, _ := msg["type"].(string); strings.HasPrefix(t, "response.") {
 		if st.resp == nil {
-			st.resp = &respState{res: st.res, streams: map[respKey]*unmask.Stream{}}
+			st.resp = &respState{res: st.res, streams: map[respKey]*unmask.Stream{}, closed: map[respKey]bool{}}
 		}
 		return st.resp.event(w, lines, name, t, msg)
 	}

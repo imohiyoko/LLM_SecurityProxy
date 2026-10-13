@@ -68,10 +68,9 @@ func New(det *detect.Detector, st *store.Store, allow []*regexp.Regexp) *Masker 
 type span struct {
 	start, end int
 	kind       string
-	keep       bool   // existing placeholder: protect, do not mask
-	field      bool   // whole value of a field: lowest priority, see mask
-	escapes    bool   // field value read from text: split at backslash escapes
-	value      string // value to store, if not the text matched (an escaped form)
+	keep       bool // existing placeholder: protect, do not mask
+	field      bool // whole value of a field: lowest priority, see mask
+	escapes    bool // field value read from text: split at backslash escapes
 }
 
 // String masks s, adds what it masked to stats and the placeholder IDs it
@@ -198,7 +197,9 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	// A value is also found in its JSON-escaped form (a quote as \"): that is
 	// how it was restored into JSON source, such as OpenAI function call
 	// arguments, which the client sends back as it got them. The placeholder
-	// still stands for the value itself.
+	// stands for the text matched, escapes included, like any span: restoring
+	// it gives back exactly that text in whatever context it was in (a string
+	// literal, a shell command).
 	for _, v := range known {
 		if len(v) < MinKnownLen {
 			break
@@ -218,11 +219,7 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 					off = start + 1
 					continue
 				}
-				sp := span{start: start, end: start + len(form), kind: "KNOWN"}
-				if form != v {
-					sp.value = v
-				}
-				spans = append(spans, sp)
+				spans = append(spans, span{start: start, end: start + len(form), kind: "KNOWN"})
 				off = start + len(form)
 			}
 		}
@@ -297,11 +294,7 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		if sp.keep {
 			continue
 		}
-		value := s[sp.start:sp.end]
-		if sp.value != "" {
-			value = sp.value
-		}
-		id, kind, err := m.store.Put(sp.kind, value)
+		id, kind, err := m.store.Put(sp.kind, s[sp.start:sp.end])
 		if err != nil {
 			return "", err
 		}
