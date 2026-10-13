@@ -2,6 +2,8 @@
 package mask
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"sort"
 	"strings"
@@ -66,9 +68,10 @@ func New(det *detect.Detector, st *store.Store, allow []*regexp.Regexp) *Masker 
 type span struct {
 	start, end int
 	kind       string
-	keep       bool // existing placeholder: protect, do not mask
-	field      bool // whole value of a field: lowest priority, see mask
-	escapes    bool // field value read from text: split at backslash escapes
+	keep       bool   // existing placeholder: protect, do not mask
+	field      bool   // whole value of a field: lowest priority, see mask
+	escapes    bool   // field value read from text: split at backslash escapes
+	value      string // value to store, if not the text matched (an escaped form)
 }
 
 // String masks s, adds what it masked to stats and the placeholder IDs it
@@ -191,22 +194,37 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	// we unmasked it, which no longer has the context a detector needs. A
 	// match inside a longer run of letters and digits is a different value
 	// and is left to the detectors.
+	//
+	// A value is also found in its JSON-escaped form (a quote as \"): that is
+	// how it was restored into JSON source, such as OpenAI function call
+	// arguments, which the client sends back as it got them. The placeholder
+	// still stands for the value itself.
 	for _, v := range known {
 		if len(v) < MinKnownLen {
 			break
 		}
-		for off := 0; ; {
-			i := strings.Index(s[off:], v)
-			if i < 0 {
-				break
+		forms := []string{v}
+		if needsJSONEscape(v) {
+			forms = append(forms, jsonEscaped(v))
+		}
+		for _, form := range forms {
+			for off := 0; ; {
+				i := strings.Index(s[off:], form)
+				if i < 0 {
+					break
+				}
+				start := off + i
+				if !standalone(s, start, start+len(form)) {
+					off = start + 1
+					continue
+				}
+				sp := span{start: start, end: start + len(form), kind: "KNOWN"}
+				if form != v {
+					sp.value = v
+				}
+				spans = append(spans, sp)
+				off = start + len(form)
 			}
-			start := off + i
-			if !standalone(s, start, start+len(v)) {
-				off = start + 1
-				continue
-			}
-			spans = append(spans, span{start: start, end: start + len(v), kind: "KNOWN"})
-			off = start + len(v)
 		}
 	}
 	// Allowed values are dropped before overlaps are resolved, so that an
@@ -279,7 +297,11 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		if sp.keep {
 			continue
 		}
-		id, kind, err := m.store.Put(sp.kind, s[sp.start:sp.end])
+		value := s[sp.start:sp.end]
+		if sp.value != "" {
+			value = sp.value
+		}
+		id, kind, err := m.store.Put(sp.kind, value)
 		if err != nil {
 			return "", err
 		}
@@ -403,4 +425,26 @@ func (m *Masker) allowed(v string) bool {
 		}
 	}
 	return false
+}
+
+// needsJSONEscape reports whether jsonEscaped(v) differs from v; it is the
+// cheap check run for every known value on every string.
+func needsJSONEscape(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c < 0x20 || c == '"' || c == '\\' {
+			return true
+		}
+	}
+	return !utf8.ValidString(v) || strings.ContainsAny(v, "\u2028\u2029")
+}
+
+// jsonEscaped is v as it appears inside a JSON string literal, with <, > and
+// & left as they are (as unmask.JSONString writes them).
+func jsonEscaped(v string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v)
+	b := bytes.TrimRight(buf.Bytes(), "\n")
+	return string(b[1 : len(b)-1])
 }

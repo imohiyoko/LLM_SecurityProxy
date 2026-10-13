@@ -17,6 +17,11 @@ type chatState struct {
 	// last is the latest chunk: the template for a chunk that flushes what
 	// is still held when the stream ends.
 	last map[string]any
+	// callIDs: the tool call id each arguments stream belongs to. Calls
+	// without an index all take position 0 when sent one per chunk, so a
+	// new id at the same key starts a new stream.
+	callIDs map[chatKey]string
+	retired int // restored by streams replaced for a new call
 }
 
 // chatKey identifies one streamed value. tool is -1 outside tool_calls.
@@ -67,19 +72,41 @@ func (c *chatState) chunk(w io.Writer, lines [][]byte, name string, msg map[stri
 			}
 		}
 		calls, _ := delta["tool_calls"].([]any)
+		var outCalls []any
 		for tpos, tc := range calls {
 			call, _ := tc.(map[string]any)
 			fn, _ := call["function"].(map[string]any)
 			if fn == nil {
+				outCalls = append(outCalls, tc)
 				continue
 			}
 			ti, ok := index(call)
 			if !ok {
 				ti = tpos
 			}
-			if args, ok := fn["arguments"].(string); ok {
-				fn["arguments"] = write(chatKey{ci, ti, "arguments"}, unmask.JSONString, args)
+			k := chatKey{ci, ti, "arguments"}
+			if id, _ := call["id"].(string); id != "" {
+				// What the previous call at this key still holds is its
+				// own: sent under its id, before the new call.
+				if prev, seen := c.callIDs[k]; seen && prev != id {
+					if old := c.streams[k]; old != nil {
+						if rest := old.Flush(); rest != "" {
+							outCalls = append(outCalls, map[string]any{"id": prev, "function": map[string]any{"arguments": rest}})
+							changed = true
+						}
+						c.retired += old.Count
+						delete(c.streams, k)
+					}
+				}
+				c.callIDs[k] = id
 			}
+			if args, ok := fn["arguments"].(string); ok {
+				fn["arguments"] = write(k, unmask.JSONString, args)
+			}
+			outCalls = append(outCalls, call)
+		}
+		if len(outCalls) != len(calls) {
+			delta["tool_calls"] = outCalls
 		}
 		if fc, _ := delta["function_call"].(map[string]any); fc != nil {
 			if args, ok := fc["arguments"].(string); ok {
@@ -165,7 +192,7 @@ func choiceSet(streams map[chatKey]*unmask.Stream) map[int]bool {
 }
 
 func (c *chatState) count() int {
-	n := 0
+	n := c.retired
 	for _, s := range c.streams {
 		n += s.Count
 	}
@@ -269,8 +296,7 @@ func (r *respState) event(w io.Writer, lines [][]byte, name, typ string, msg map
 
 	case isDone:
 		d := respDeltas[dtyp]
-		k := newRespKey(dtyp, msg)
-		s := r.streams[k]
+		k, s := r.doneStream(dtyp, msg)
 		if s != nil {
 			if err := r.flushStream(w, k, s); err != nil {
 				return err
@@ -311,6 +337,28 @@ func (r *respState) event(w io.Writer, lines [][]byte, name, typ string, msg map
 		return writeRaw(w, lines)
 	}
 	return writeJSON(w, name, msg)
+}
+
+// doneStream finds the stream a done event closes: by its full key or, if a
+// backend sent the indexes on only one of the delta and done events, the
+// only open stream of that type for the same item.
+func (r *respState) doneStream(dtyp string, msg map[string]any) (respKey, *unmask.Stream) {
+	k := newRespKey(dtyp, msg)
+	if s := r.streams[k]; s != nil || k.item == "" {
+		return k, s
+	}
+	var found respKey
+	n := 0
+	for _, o := range r.order {
+		if o.typ == dtyp && o.item == k.item {
+			found = o
+			n++
+		}
+	}
+	if n != 1 {
+		return k, nil
+	}
+	return found, r.streams[found]
 }
 
 // renumber sets msg's sequence_number to the next one this stream emits and

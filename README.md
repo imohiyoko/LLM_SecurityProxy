@@ -57,9 +57,10 @@ Log lines carry `profile=<name>`. All profiles share one key, database and rule
 set, so a value gets the same placeholder whichever client sent it; a response
 still only restores the placeholders issued for its own request.
 
-Requests are masked whatever the API. Placeholders are restored in Anthropic
-Messages, OpenAI Chat Completions and OpenAI Responses replies, including tool
-call arguments; other APIs pass replies through unchanged. The placeholder
+Requests are masked whatever the API. Placeholders are restored in JSON
+replies of any API, and in streamed replies of Anthropic Messages, OpenAI Chat
+Completions and OpenAI Responses, including tool call arguments; streams in
+other formats pass through unchanged. The placeholder
 notice goes into the system prompt (Anthropic), a leading system message
 (Chat Completions) or a leading developer message in `input` (Responses).
 

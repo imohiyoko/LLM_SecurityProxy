@@ -129,7 +129,7 @@ func (st *sseState) writeEvent(w io.Writer, lines [][]byte) error {
 	}
 	if _, ok := msg["choices"].([]any); ok {
 		if st.chat == nil {
-			st.chat = &chatState{res: st.res, streams: map[chatKey]*unmask.Stream{}}
+			st.chat = &chatState{res: st.res, streams: map[chatKey]*unmask.Stream{}, callIDs: map[chatKey]string{}}
 		}
 		return st.chat.chunk(w, lines, name, msg)
 	}

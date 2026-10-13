@@ -215,7 +215,10 @@ the next turn masks the string again with the value included.
   into it are JSON-string-escaped. On the request side `arguments` is decoded
   and its values masked, then re-encoded only if something was masked: the
   client sends restored arguments back verbatim, and a known value's escaped
-  form would not match it.
+  form would not match it. Arguments that are not JSON are masked as text;
+  for them, and for JSON source anywhere, the known-value pass also looks for
+  each value's JSON-escaped form, whose placeholder stands for the value
+  itself.
 - `text/event-stream`, Anthropic Messages: per content block, run a stream
   unmasker.
   - `text_delta`: restore as is.
@@ -230,14 +233,16 @@ the next turn masks the string again with the value included.
   stream unmasker per choice `delta.content`, `delta.refusal`, tool call
   `function.arguments` and legacy `function_call.arguments` (the last two
   JSON-escaped). A choice or tool call without `index` is keyed by its
-  position. Held text is added to the chunk that carries the choice's
+  position; a new tool call `id` at the same position starts a new stream,
+  and the old one's held text goes out under its own id. Held text is added to the chunk that carries the choice's
   `finish_reason`, in key order, or sent in one more chunk before `[DONE]` or
   at the end of the stream.
 - `text/event-stream`, OpenAI Responses (`response.*` events): one stream
   unmasker per `*.delta` source (output text, refusal, function and MCP call
   arguments, custom tool input). Before the matching `*.done` event, held text
   goes out as one more delta; the full value in the done event is restored
-  too. Anything still held goes out before `response.completed`,
+  too. A done event that lacks an index its deltas had is matched to the only
+  open stream of its type for the same item. Anything still held goes out before `response.completed`,
   `.incomplete` or `.failed`, or at the end of the stream. Items, content parts
   and the final response are restored whole. `sequence_number` is renumbered,
   since held deltas are dropped and flush deltas added.

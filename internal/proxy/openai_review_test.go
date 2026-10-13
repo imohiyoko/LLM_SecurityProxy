@@ -291,3 +291,76 @@ func TestResponsesRestoredCount(t *testing.T) {
 		t.Errorf("restored = %d, want 1", n)
 	}
 }
+
+// Arguments that are not JSON (a model can produce those) are masked as
+// text; a known value in them is found in its escaped form too, and its
+// placeholder stands for the value itself.
+func TestInvalidJSONArgumentsMasked(t *testing.T) {
+	f := openaiFixture(t, func(w http.ResponseWriter, _, _ string) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	})
+	args := `{"cmd":"login ` + esc(quoted) // truncated: not JSON
+	body := `{"model":"m","input":[{"type":"function_call","call_id":"c1","name":"bash","arguments":` + jsonStr(args) + `}]}`
+	resp, err := http.Post(f.proxy.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	var sent struct{ Input []map[string]any }
+	json.Unmarshal(<-f.received, &sent)
+	got := sent.Input[len(sent.Input)-1]["arguments"].(string)
+	ph := placeholder.Pattern.FindStringSubmatch(got)
+	if strings.Contains(got, esc(quoted)) || ph == nil {
+		t.Fatalf("arguments = %q", got)
+	}
+	if v, _ := f.store.Resolve(ph[2]); v != quoted {
+		t.Errorf("placeholder stands for %q, want %q", v, quoted)
+	}
+}
+
+// A done event without the content_index its deltas had still closes their
+// stream: the held tail goes out before it, not again after it.
+func TestResponsesDoneWithoutContentIndex(t *testing.T) {
+	out, _ := runSSE(t, true,
+		`{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"a `+testPH[:20]+`","sequence_number":1}`,
+		`{"type":"response.output_text.done","item_id":"m","output_index":0,"text":"a `+testPH[:20]+`","sequence_number":2}`,
+		`{"type":"response.completed","response":{"id":"r"},"sequence_number":3}`)
+	var types []any
+	var text string
+	for _, e := range events(t, out) {
+		types = append(types, e["type"])
+		if e["type"] == "response.output_text.delta" {
+			text += e["delta"].(string)
+		}
+	}
+	if text != "a "+testPH[:20] || types[len(types)-2] != "response.output_text.done" {
+		t.Errorf("text = %q, events = %v", text, types)
+	}
+}
+
+// Tool calls without an index, one per chunk, all sit at position 0; a held
+// tail of one call is not prepended to the next.
+func TestChatStreamToolCallsWithoutIndexSeparate(t *testing.T) {
+	out, _ := runSSE(t, false,
+		`{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\"x\":1} __LL"}}]}}]}`,
+		`{"choices":[{"delta":{"tool_calls":[{"id":"b","function":{"name":"g","arguments":"{\"y\":1}"}}]}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)
+	args := map[string]string{}
+	var last string
+	for _, e := range events(t, out) {
+		delta := e["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+		calls, _ := delta["tool_calls"].([]any)
+		for _, c := range calls {
+			call := c.(map[string]any)
+			if id, ok := call["id"].(string); ok {
+				last = id
+			}
+			a, _ := call["function"].(map[string]any)["arguments"].(string)
+			args[last] += a
+		}
+	}
+	if args["a"] != `{"x":1} __LL` || args["b"] != `{"y":1}` {
+		t.Errorf("arguments = %q", args)
+	}
+}
