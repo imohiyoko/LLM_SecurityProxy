@@ -485,7 +485,10 @@ func TestResponsesInputKeepsProtocolFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &sent); err != nil {
 		t.Fatal(err)
 	}
-	in := sent.Input
+	if sent.Input[0]["role"] != "developer" || !strings.Contains(fmt.Sprint(sent.Input[0]["content"]), Notice) {
+		t.Fatalf("notice not first in input: %s", raw)
+	}
+	in := sent.Input[1:]
 	if text := in[0]["content"].([]any)[0].(map[string]any)["text"]; strings.Contains(text.(string), secret) {
 		t.Fatalf("message text not masked: %s", raw)
 	}

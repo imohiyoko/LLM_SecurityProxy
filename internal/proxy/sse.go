@@ -6,14 +6,20 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/unmask"
 )
 
-// sseState tracks one streamed Anthropic message.
+// sseState tracks one streamed response: an Anthropic message, an OpenAI
+// chat completion or an OpenAI Responses API response. The formats do not
+// share event shapes, so one state handles all three; chat and resp are
+// created on the first event of their format.
 type sseState struct {
 	res    unmask.Resolver
 	blocks map[int]*blockState
+	chat   *chatState
+	resp   *respState
 }
 
 type blockState struct {
@@ -52,6 +58,11 @@ func streamSSE(w http.ResponseWriter, body io.Reader, res unmask.Resolver) (int,
 					return st.count(), werr
 				}
 			}
+			// A stream can end without [DONE] or a done event; what is
+			// still held goes out rather than being dropped.
+			if werr := st.flushOpenAI(w); werr != nil {
+				return st.count(), werr
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -68,7 +79,25 @@ func (st *sseState) count() int {
 	for _, b := range st.blocks {
 		n += b.stream.Count
 	}
+	if st.chat != nil {
+		n += st.chat.count()
+	}
+	if st.resp != nil {
+		n += st.resp.count()
+	}
 	return n
+}
+
+func (st *sseState) flushOpenAI(w io.Writer) error {
+	if st.chat != nil {
+		if err := st.chat.flush(w); err != nil {
+			return err
+		}
+	}
+	if st.resp != nil {
+		return st.resp.flushAll(w)
+	}
+	return nil
 }
 
 // writeEvent processes one event (its lines, without the blank terminator).
@@ -91,7 +120,24 @@ func (st *sseState) writeEvent(w io.Writer, lines [][]byte) error {
 	}
 	var msg map[string]any
 	if data == nil || json.Unmarshal(data, &msg) != nil {
+		if string(data) == "[DONE]" && st.chat != nil { // end of an OpenAI chat stream
+			if err := st.chat.flush(w); err != nil {
+				return err
+			}
+		}
 		return writeRaw(w, lines)
+	}
+	if _, ok := msg["choices"].([]any); ok {
+		if st.chat == nil {
+			st.chat = &chatState{res: st.res, streams: map[chatKey]*unmask.Stream{}, callIDs: map[chatKey]string{}}
+		}
+		return st.chat.chunk(w, lines, name, msg)
+	}
+	if t, _ := msg["type"].(string); strings.HasPrefix(t, "response.") {
+		if st.resp == nil {
+			st.resp = &respState{res: st.res, streams: map[respKey]*unmask.Stream{}, closed: map[respKey]bool{}}
+		}
+		return st.resp.event(w, lines, name, t, msg)
 	}
 
 	switch msg["type"] {

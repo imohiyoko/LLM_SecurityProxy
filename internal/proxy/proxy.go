@@ -186,9 +186,14 @@ func (s *Server) maskRequest(r *http.Request) ([]byte, mask.Stats, mask.IDs, err
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if s.InjectNotice && isAnthropicMessages(r.URL.Path) {
-		if m, ok := doc.(map[string]any); ok {
+	if m, ok := doc.(map[string]any); ok && s.InjectNotice {
+		switch {
+		case isAnthropicMessages(r.URL.Path):
 			injectSystemNotice(m)
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			injectChatNotice(m)
+		case strings.HasSuffix(r.URL.Path, "/responses"):
+			injectResponsesNotice(m)
 		}
 	}
 	out, err := marshal(doc)
@@ -268,6 +273,63 @@ func injectSystemNotice(m map[string]any) {
 	}
 }
 
+// injectChatNotice adds the notice to the leading system or developer
+// message of an OpenAI chat completion, or puts a system message first.
+func injectChatNotice(m map[string]any) {
+	msgs, ok := m["messages"].([]any)
+	if !ok {
+		return
+	}
+	if first, ok := firstInstructions(msgs); ok {
+		switch c := first["content"].(type) {
+		case string:
+			first["content"] = c + "\n\n" + Notice
+			return
+		case []any:
+			first["content"] = append(c, map[string]any{"type": "text", "text": Notice})
+			return
+		}
+	}
+	m["messages"] = append([]any{map[string]any{"role": "system", "content": Notice}}, msgs...)
+}
+
+func firstInstructions(msgs []any) (map[string]any, bool) {
+	if len(msgs) == 0 {
+		return nil, false
+	}
+	first, ok := msgs[0].(map[string]any)
+	if !ok || (first["role"] != "system" && first["role"] != "developer") {
+		return nil, false
+	}
+	return first, true
+}
+
+// injectResponsesNotice puts the notice first in the input of an OpenAI
+// Responses API request, as a developer message. instructions is left alone:
+// some backends accept only the client's own instructions there. A request
+// that continues a conversation kept by the server (previous_response_id,
+// conversation) gets none: the server already holds the notice from the
+// first turn, and every further one would pile up in its context.
+func injectResponsesNotice(m map[string]any) {
+	if m["previous_response_id"] != nil || m["conversation"] != nil {
+		return
+	}
+	switch in := m["input"].(type) {
+	case []any:
+		note := map[string]any{
+			"type":    "message",
+			"role":    "developer",
+			"content": []any{map[string]any{"type": "input_text", "text": Notice}},
+		}
+		m["input"] = append([]any{note}, in...)
+	case string:
+		m["input"] = []any{
+			map[string]any{"role": "developer", "content": Notice},
+			map[string]any{"role": "user", "content": in},
+		}
+	}
+}
+
 func unmaskJSON(w http.ResponseWriter, resp *http.Response, res unmask.Resolver) (int, error) {
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes))
 	if err != nil {
@@ -281,12 +343,7 @@ func unmaskJSON(w http.ResponseWriter, resp *http.Response, res unmask.Resolver)
 		_, err = w.Write(raw)
 		return 0, err
 	}
-	total := 0
-	doc, _ = walkStrings(doc, func(v string) (string, error) {
-		out, n := unmask.Replace(v, res, unmask.Identity)
-		total += n
-		return out, nil
-	})
+	doc, total := restoreStrings(doc, res)
 	out, err := marshal(doc)
 	if err != nil {
 		return 0, err

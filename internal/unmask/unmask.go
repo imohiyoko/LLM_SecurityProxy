@@ -3,6 +3,7 @@
 package unmask
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -21,8 +22,14 @@ type Escaper func(string) string
 func Identity(s string) string { return s }
 
 // JSONString escapes a value for insertion inside a JSON string literal.
+// HTML characters (<, >, &) are kept as they are, so a restored value stays
+// as close to its plain form as JSON allows.
 func JSONString(s string) string {
-	b, _ := json.Marshal(s)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.Encode(s)
+	b := bytes.TrimRight(buf.Bytes(), "\n")
 	return string(b[1 : len(b)-1])
 }
 
