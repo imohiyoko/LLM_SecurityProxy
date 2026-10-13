@@ -72,11 +72,13 @@ profiles:
 
 func TestEndpointsInvalid(t *testing.T) {
 	for name, tc := range map[string]struct{ yaml, want string }{
-		"listen and profiles": {"listen: 127.0.0.1:9000\nprofiles:\n  a:\n    listen: 127.0.0.1:9001\n", "both set"},
-		"no listen":           {"profiles:\n  a:\n    upstream:\n      base_url: https://x.example.com\n", "listen is required"},
-		"same listen":         {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n  b:\n    listen: 127.0.0.1:9001\n", "both listen"},
-		"bad name":            {"profiles:\n  Claude Code:\n    listen: 127.0.0.1:9001\n", "name must be"},
-		"unknown field":       {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n    base_url: https://x.example.com\n", "not found"},
+		"listen and profiles":         {"listen: 127.0.0.1:9000\nprofiles:\n  a:\n    listen: 127.0.0.1:9001\n", "both set"},
+		"no listen":                   {"profiles:\n  a:\n    upstream:\n      base_url: https://x.example.com\n", "listen is required"},
+		"same listen":                 {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n  b:\n    listen: 127.0.0.1:9001\n", "both listen"},
+		"same listen, other spelling": {"profiles:\n  a:\n    listen: '[::1]:9001'\n  b:\n    listen: '[0:0:0:0:0:0:0:1]:9001'\n", "both listen"},
+		"bad listen":                  {"profiles:\n  a:\n    listen: 127.0.0.1\n", "listen:"},
+		"bad name":                    {"profiles:\n  Claude Code:\n    listen: 127.0.0.1:9001\n", "name must be"},
+		"unknown field":               {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n    base_url: https://x.example.com\n", "not found"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := load(t, tc.yaml)

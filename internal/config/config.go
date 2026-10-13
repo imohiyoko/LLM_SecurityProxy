@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -140,10 +141,17 @@ func (c *Config) Endpoints() ([]Endpoint, error) {
 		if p.Listen == "" {
 			return nil, fmt.Errorf("profile %s: listen is required", name)
 		}
-		if other, ok := seen[p.Listen]; ok {
-			return nil, fmt.Errorf("profiles %s and %s both listen on %s", other, name, p.Listen)
+		// Compare resolved addresses: [::1]:8787 and [0:0:0:0:0:0:0:1]:8787,
+		// or localhost:8787 and 127.0.0.1:8787, are the same listener.
+		addr, err := net.ResolveTCPAddr("tcp", p.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("profile %s: listen: %w", name, err)
 		}
-		seen[p.Listen] = name
+		key := addr.String()
+		if other, ok := seen[key]; ok {
+			return nil, fmt.Errorf("profiles %s and %s both listen on %s", other, name, key)
+		}
+		seen[key] = name
 		e := Endpoint{Name: name, Listen: p.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}
 		if u := p.Upstream; u.BaseURL != "" {
 			e.Upstream.BaseURL = u.BaseURL
