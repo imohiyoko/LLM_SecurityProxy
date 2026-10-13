@@ -312,8 +312,14 @@ func isWord(c byte) bool {
 }
 
 // endsEscape reports whether the byte at i ends a backslash or percent escape.
+// A backslash escapes i only if it is not itself escaped: in \\n the n is
+// literal.
 func endsEscape(s string, i int) bool {
-	if i >= 1 && s[i-1] == '\\' {
+	n := 0
+	for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+		n++
+	}
+	if n%2 == 1 {
 		return true
 	}
 	return i >= 2 && s[i-2] == '%' && isHex(s[i-1]) && isHex(s[i])

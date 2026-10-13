@@ -90,7 +90,7 @@ func TestKnownValueBoundary(t *testing.T) {
 	if out, _ := m.String("card "+card, Stats{}, nil); strings.Contains(out, card) {
 		t.Fatalf("not masked: %s", out)
 	}
-	for _, in := range []string{card + "2112", "9" + card, "id" + card + "x"} {
+	for _, in := range []string{card + "2112", "9" + card, "id" + card + "x", `"a\\n` + card + `"`} {
 		if out, _ := m.String(in, Stats{}, nil); out != in {
 			t.Errorf("%q: masked in part: %s", in, out)
 		}
