@@ -43,7 +43,11 @@ extra CA bundle for TLS-inspecting proxies.
    are forwarded unmasked; they carry the upstream credential. An unchanged
    query is forwarded byte for byte; a malformed one is rejected. The URL path
    is forwarded as is.
-4. Append a notice to the system prompt explaining placeholders.
+4. Add a notice explaining placeholders: appended to the system prompt
+   (Anthropic), to a leading system or developer message or as a new first
+   system message (Chat Completions), or as a first developer message in
+   `input` (Responses; `instructions` is left alone, since some backends
+   accept only the client's own there).
 5. Forward.
 
 ### Rulesets
@@ -206,7 +210,10 @@ the next turn masks the string again with the value included.
 - `application/json`: walk and restore placeholders (thinking blocks excluded),
   including object keys inside tool input, as the streaming path does. A
   restored key that would collide with another key is left as a placeholder.
-- `text/event-stream`: parse events; per content block, run a stream unmasker.
+  An OpenAI `arguments` member is JSON source in a string, so values restored
+  into it are JSON-string-escaped.
+- `text/event-stream`, Anthropic Messages: per content block, run a stream
+  unmasker.
   - `text_delta`: restore as is.
   - `input_json_delta`: the text is a fragment of JSON source, so restored
     values are JSON-string-escaped.
@@ -215,6 +222,17 @@ the next turn masks the string again with the value included.
     flushed before `content_block_stop`.
   - `thinking_delta` is not restored: the thinking block comes back verbatim in
     the next request and must still match its signature.
+- `text/event-stream`, OpenAI Chat Completions (`choices` in the data): one
+  stream unmasker per choice `delta.content` and per tool call
+  `function.arguments` (JSON-escaped). Held text is added to the chunk that
+  carries the choice's `finish_reason`, or sent in one more chunk before
+  `[DONE]`.
+- `text/event-stream`, OpenAI Responses (`response.*` events): one stream
+  unmasker per `*.delta` source (output text, refusal, function call
+  arguments, custom tool input). Before the matching `*.done` event, held text
+  goes out as one more delta; the full value in the done event is restored
+  too. Items, content parts and the final response are restored whole, except
+  reasoning items.
 - IDs outside the request's scope, and unknown IDs, are left untouched.
 
 ## Storage
@@ -233,8 +251,6 @@ into memory at start-up.
 
 ## Not yet
 
-- OpenAI Chat Completions / Responses (Codex, Cline). Function call
-  `arguments` are JSON strings and need JSON-escaped restoration.
 - OS keychain for the master key; retention / expiry of stored values.
 - NER-based detection (names, organisations) in free text. Names are only
   found by their field name, and in free text once seen in a field.

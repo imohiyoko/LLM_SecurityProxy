@@ -16,8 +16,8 @@ coding agent (Claude Code, ...) ──► llmsp (127.0.0.1) ──► [corporate
 - Placeholders in the model's reply — text **and tool call arguments** — are
   restored before the agent sees them, so files and commands get the real values.
 
-> Status: early MVP. Anthropic Messages API (streaming and non-streaming) is
-> supported. OpenAI-compatible APIs are planned.
+> Status: early MVP. Supported APIs, streaming and non-streaming: Anthropic
+> Messages, OpenAI Chat Completions and OpenAI Responses (Codex).
 
 ## Quick start
 
@@ -57,9 +57,11 @@ Log lines carry `profile=<name>`. All profiles share one key, database and rule
 set, so a value gets the same placeholder whichever client sent it; a response
 still only restores the placeholders issued for its own request.
 
-Requests are masked whatever the API, but placeholders are restored only in
-Anthropic Messages responses for now. Behind an OpenAI-style upstream the
-client sees placeholders in replies and tool calls.
+Requests are masked whatever the API. Placeholders are restored in Anthropic
+Messages, OpenAI Chat Completions and OpenAI Responses replies, including tool
+call arguments; other APIs pass replies through unchanged. The placeholder
+notice goes into the system prompt (Anthropic), a leading system message
+(Chat Completions) or a leading developer message in `input` (Responses).
 
 ## Rules
 

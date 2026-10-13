@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/unmask"
 )
 
 // skipKeys hold protocol fields, not conversation content. Masking them would
@@ -62,7 +64,25 @@ func opaqueBlock(m map[string]any) bool {
 // If a restored key would collide with another key of the same object, the
 // key is kept as it was, so no member is dropped.
 func walkStrings(v any, fn func(string) (string, error)) (any, error) {
-	return walk(v, fn, nil, false, false)
+	return walk(v, fn, nil, nil, false, false)
+}
+
+// restoreStrings is walkStrings for responses: it restores placeholders in
+// every content string and returns how many it restored. An OpenAI
+// "arguments" member is JSON text inside a string, so values restored into it
+// are JSON-escaped; a value with a quote or a backslash would otherwise break
+// the arguments the client parses.
+func restoreStrings(v any, res unmask.Resolver) (any, int) {
+	n := 0
+	with := func(esc unmask.Escaper) func(string) (string, error) {
+		return func(s string) (string, error) {
+			out, c := unmask.Replace(s, res, esc)
+			n += c
+			return out, nil
+		}
+	}
+	v, _ = walk(v, with(unmask.Identity), nil, with(unmask.JSONString), false, false)
+	return v, n
 }
 
 // maskStrings is walkStrings for the request side, where a key that should be
@@ -71,16 +91,18 @@ func walkStrings(v any, fn func(string) (string, error)) (any, error) {
 // tool arguments is passed to field with its key instead of to fn, so that
 // it can be masked by its field name.
 func maskStrings(v any, fn func(string) (string, error), field func(key, value string) (string, error)) (any, error) {
-	return walk(v, fn, field, false, true)
+	return walk(v, fn, field, nil, false, true)
 }
 
-func walk(v any, fn func(string) (string, error), field func(key, value string) (string, error), free, strict bool) (any, error) {
+// args, if set, is applied instead of fn to a protocol-level string
+// "arguments" member (not one inside tool arguments, which is plain data).
+func walk(v any, fn func(string) (string, error), field func(key, value string) (string, error), args func(string) (string, error), free, strict bool) (any, error) {
 	switch t := v.(type) {
 	case string:
 		return fn(t)
 	case []any:
 		for i, e := range t {
-			nv, err := walk(e, fn, field, free, strict)
+			nv, err := walk(e, fn, field, args, free, strict)
 			if err != nil {
 				return nil, err
 			}
@@ -97,10 +119,14 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 			}
 			var nv any
 			var err error
-			if str, ok := e.(string); ok && free && field != nil {
+			str, isStr := e.(string)
+			switch {
+			case isStr && free && field != nil:
 				nv, err = field(k, str)
-			} else {
-				nv, err = walk(e, fn, field, free || toolArgs(k, t), strict)
+			case isStr && !free && k == "arguments" && args != nil:
+				nv, err = args(str)
+			default:
+				nv, err = walk(e, fn, field, args, free || toolArgs(k, t), strict)
 			}
 			if err != nil {
 				return nil, err
