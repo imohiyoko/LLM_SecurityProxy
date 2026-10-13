@@ -170,3 +170,37 @@ func TestCheckWrites(t *testing.T) {
 		t.Error("Check on a closed store succeeded")
 	}
 }
+
+// A row another process wrote that cannot be decrypted does not hide the
+// good rows read before it, does not crash, and is reported by Check.
+func TestSyncBadRowKeepsGoodRows(t *testing.T) {
+	for name, nonce := range map[string]string{"wrong ciphertext": "x'000000000000000000000000'", "short nonce": "x'00'"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			a, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			b, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+
+			if _, _, err := a.Put("NAME", "Jane Example-Doe"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.db.Exec(`INSERT INTO secrets (id, kind, nonce, ciphertext, created_at) VALUES ('0123456789ab', 'X', ` + nonce + `, x'00', 0)`); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(syncEvery + 100*time.Millisecond)
+			if known, _ := b.Known(); !slices.Contains(known, "Jane Example-Doe") {
+				t.Errorf("good row before the bad one not masked: %v", known)
+			}
+			if err := b.Check(t.Context()); err == nil || !strings.Contains(err.Error(), "other processes") {
+				t.Errorf("Check = %v, want the sync error", err)
+			}
+		})
+	}
+}
