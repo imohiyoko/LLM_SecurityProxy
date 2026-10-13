@@ -1,7 +1,8 @@
 // Command llmsp is a local proxy that masks sensitive values before they
 // reach an LLM API and restores them in the response.
 //
-//	llmsp [serve] [-config PATH] [-listen ADDR]   run the proxy (one listener per profile)
+//	llmsp [serve] [-config PATH] [-profile NAME] [-listen ADDR]
+//	                                              run the proxy (one listener per profile)
 //	llmsp rules list [-config PATH]               show rulesets and rules
 //	llmsp rules test [-config PATH] [FILE]        show what would be masked
 package main
@@ -106,21 +107,16 @@ func (e *env) detector() (*detect.Detector, error) {
 }
 
 func serve(args []string) error {
-	var listen string
+	var listen, profile string
 	e, err := load("serve", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&listen, "listen", "", "listen address (overrides config; not with profiles)")
+		fs.StringVar(&listen, "listen", "", "listen address (overrides config; with profiles, only with -profile)")
+		fs.StringVar(&profile, "profile", "", "serve only this profile")
 	})
 	if err != nil {
 		return err
 	}
 	cfg := e.cfg
-	if listen != "" {
-		if len(cfg.Profiles) > 0 {
-			return errors.New("-listen cannot be used with profiles; set listen in each profile")
-		}
-		cfg.Listen = listen
-	}
-	endpoints, err := cfg.Endpoints()
+	endpoints, err := cfg.Select(profile, listen)
 	if err != nil {
 		return err
 	}
@@ -175,6 +171,8 @@ func serve(args []string) error {
 			AuthHeaders:  ep.Upstream.AuthHeaders,
 			InjectNotice: ep.InjectNotice,
 			Log:          plog,
+			Profile:      ep.Name,
+			Health:       st.Check,
 		}
 		ln, err := net.Listen("tcp", ep.Listen)
 		if err != nil {

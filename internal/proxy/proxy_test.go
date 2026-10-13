@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 )
 
 type fixture struct {
+	logs     *bytes.Buffer
 	proxy    *httptest.Server
 	store    *store.Store
 	received chan []byte
@@ -29,7 +31,7 @@ type fixture struct {
 // with respond(body).
 func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) *fixture {
 	t.Helper()
-	f := &fixture{received: make(chan []byte, 4), requests: make(chan *http.Request, 4)}
+	f := &fixture{logs: &bytes.Buffer{}, received: make(chan []byte, 4), requests: make(chan *http.Request, 4)}
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		f.received <- b
@@ -54,9 +56,10 @@ func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) 
 		Client:       up.Client(),
 		Masker:       mask.New(det, st, nil),
 		Resolver:     st,
+		Health:       st.Check,
 		AuthHeaders:  []string{"Authorization", "X-Api-Key"},
 		InjectNotice: true,
-		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:          slog.New(slog.NewTextHandler(f.logs, nil)),
 	}
 	f.proxy = httptest.NewServer(srv)
 	t.Cleanup(f.proxy.Close)
@@ -558,5 +561,36 @@ func TestRekeyCollision(t *testing.T) {
 	}
 	if len(m) != 3 || m["X"] != 2 || m["X (2)"] != 3 || m["X (3)"] != 1 {
 		t.Fatalf("strict rekey: %v", m)
+	}
+}
+
+func TestHealthAnsweredLocally(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+		t.Error("health request forwarded upstream")
+	})
+	resp, err := http.Get(f.proxy.URL + HealthPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), `"status":"ok"`) {
+		t.Fatalf("health = %d %s", resp.StatusCode, b)
+	}
+
+	f.store.Close() // a broken store must show, without its internal error
+	for range 3 {
+		resp, err = http.Get(f.proxy.URL + HealthPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable || string(b) != `{"error":"store","profile":"","status":"error"}` {
+			t.Fatalf("health with closed store = %d %s", resp.StatusCode, b)
+		}
+	}
+	if n := strings.Count(f.logs.String(), "health check failed"); n != 1 {
+		t.Errorf("failure logged %d times over 3 polls, want once:\n%s", n, f.logs.String())
 	}
 }

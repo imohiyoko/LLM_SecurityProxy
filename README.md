@@ -34,6 +34,12 @@ claude
 Outbound traffic uses `HTTPS_PROXY` / `HTTP_PROXY`, or `upstream.proxy` in the
 config. See [`config.example.yaml`](config.example.yaml).
 
+`GET /_llmsp/health` is answered by llmsp itself, never forwarded: `200
+{"status":"ok"}` when the listener can run its rules and write its database,
+`503 {"status":"error","error":"masking"|"store"}` otherwise; the cause is in
+the log. Use it from scripts and hooks to tell a working proxy from a port that
+is merely open.
+
 ### One endpoint per client
 
 `profiles` runs several listeners in one process, each with its own upstream
@@ -52,6 +58,12 @@ profiles:
       base_url: https://api.openai.com/v1
       auth_headers: [Authorization]
 ```
+
+To run a single profile, possibly on another port, use
+`llmsp serve -profile codex [-listen 127.0.0.1:9000]`; only that profile's
+settings are checked. Separate processes on one data directory share the key
+and database, and pick up values the others learned within a second; one
+process serving every profile shares them at once.
 
 Log lines carry `profile=<name>`. All profiles share one key, database and rule
 set, so a value gets the same placeholder whichever client sent it; a response
