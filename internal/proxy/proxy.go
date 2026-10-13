@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/unmask"
@@ -45,8 +48,13 @@ type Server struct {
 	// Profile names this listener in health responses.
 	Profile string
 	// Health, if set, is checked by the health endpoint besides masking.
-	Health func() error
+	Health func(context.Context) error
+
+	unhealthy atomic.Bool // last health check failed; logged on change only
 }
+
+// healthTimeout bounds one health check.
+const healthTimeout = 3 * time.Second
 
 // HealthPath is answered by llmsp itself, never forwarded: it reports
 // whether this listener can mask, so scripts can tell a working proxy from
@@ -60,7 +68,7 @@ var hopHeaders = []string{
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == HealthPath {
-		s.health(w)
+		s.health(w, r)
 		return
 	}
 	log := s.Log.With("method", r.Method, "path", r.URL.Path)
@@ -147,15 +155,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Info("proxied", attrs...)
 }
 
-// health masks a probe string and checks Health. It answers 200 with
-// {"status":"ok"} or 503 with {"status":"error","error":...}.
-func (s *Server) health(w http.ResponseWriter) {
+// health answers 200 {"status":"ok"} or 503 {"status":"error","error":C},
+// where C is "masking" or "store". The caller is not authenticated, so the
+// cause stays in the log; it is logged when the state changes, not on every
+// poll.
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), healthTimeout)
+	defer cancel()
 	body := map[string]any{"status": "ok", "profile": s.Profile}
 	status := http.StatusOK
-	if err := s.check(); err != nil {
-		body["status"], body["error"] = "error", err.Error()
+	code, err := s.check(ctx)
+	if err != nil {
+		body["status"], body["error"] = "error", code
 		status = http.StatusServiceUnavailable
-		s.Log.Error("health check failed", "err", err)
+		if !s.unhealthy.Swap(true) {
+			s.Log.Error("health check failed", "check", code, "err", err)
+		}
+	} else if s.unhealthy.Swap(false) {
+		s.Log.Info("health check ok again")
 	}
 	b, _ := json.Marshal(body)
 	w.Header().Set("Content-Type", "application/json")
@@ -163,16 +180,20 @@ func (s *Server) health(w http.ResponseWriter) {
 	w.Write(b)
 }
 
-func (s *Server) check() error {
+// check runs the detectors over a probe string, which has nothing to mask
+// (a masked probe would be stored for good and then masked everywhere), and
+// checks that the store can be written, where masking a new value would
+// fail.
+func (s *Server) check(ctx context.Context) (string, error) {
 	if _, err := s.Masker.String("llmsp health probe", mask.Stats{}, nil); err != nil {
-		return fmt.Errorf("masking: %w", err)
+		return "masking", err
 	}
 	if s.Health != nil {
-		if err := s.Health(); err != nil {
-			return fmt.Errorf("store: %w", err)
+		if err := s.Health(ctx); err != nil {
+			return "store", err
 		}
 	}
-	return nil
+	return "", nil
 }
 
 type httpError struct {

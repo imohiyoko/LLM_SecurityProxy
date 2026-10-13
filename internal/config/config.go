@@ -117,60 +117,88 @@ func Load(path string, mustExist bool) (*Config, error) {
 	if len(c.Profiles) > 0 && c.listenSet {
 		return nil, fmt.Errorf("config %s: listen and profiles are both set; give each profile its own listen", path)
 	}
-	if _, err := c.Endpoints(); err != nil {
-		return nil, fmt.Errorf("config %s: %w", path, err)
+	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+		if !profileName.MatchString(name) {
+			return nil, fmt.Errorf("config %s: profile %q: name must be lowercase letters, digits, - and _", path, name)
+		}
+		if c.Profiles[name].Listen == "" {
+			return nil, fmt.Errorf("config %s: profile %s: listen is required", path, name)
+		}
 	}
 	return c, nil
 }
 
 var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// Endpoints returns the listeners to serve, sorted by name. Without profiles
-// it is the top-level listen and upstream, named "default".
-func (c *Config) Endpoints() ([]Endpoint, error) {
-	if len(c.Profiles) == 0 {
-		return []Endpoint{{Name: "default", Listen: c.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}}, nil
-	}
+// Select returns the listeners to serve. profile empty: every profile, or
+// without profiles the top-level listen and upstream, named "default".
+// Otherwise only that profile ("default" when there are none), so a bad
+// address in another profile does not stop it. listen, if set, replaces the
+// address of the one listener selected; with several it is an error.
+// Addresses are resolved, and two listeners on one address are an error:
+// [::1]:8787 and [0:0:0:0:0:0:0:1]:8787, or localhost:8787 and
+// 127.0.0.1:8787, are the same listener.
+func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 	var out []Endpoint
+	switch {
+	case len(c.Profiles) == 0 && (profile == "" || profile == "default"):
+		out = []Endpoint{{Name: "default", Listen: c.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}}
+	case len(c.Profiles) == 0:
+		return nil, fmt.Errorf("profile %s: the config has no profiles", profile)
+	case profile == "":
+		for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+			out = append(out, c.endpoint(name))
+		}
+		if listen != "" {
+			return nil, errors.New("listen override with several profiles: select one profile")
+		}
+	default:
+		if _, ok := c.Profiles[profile]; !ok {
+			return nil, fmt.Errorf("profile %s: no such profile in the config", profile)
+		}
+		out = []Endpoint{c.endpoint(profile)}
+	}
+	if listen != "" {
+		out[0].Listen = listen
+	}
 	seen := map[string]string{}
-	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
-		p := c.Profiles[name]
-		if !profileName.MatchString(name) {
-			return nil, fmt.Errorf("profile %q: name must be lowercase letters, digits, - and _", name)
-		}
-		if p.Listen == "" {
-			return nil, fmt.Errorf("profile %s: listen is required", name)
-		}
-		// Compare resolved addresses: [::1]:8787 and [0:0:0:0:0:0:0:1]:8787,
-		// or localhost:8787 and 127.0.0.1:8787, are the same listener.
-		addr, err := net.ResolveTCPAddr("tcp", p.Listen)
+	for _, e := range out {
+		addr, err := net.ResolveTCPAddr("tcp", e.Listen)
 		if err != nil {
-			return nil, fmt.Errorf("profile %s: listen: %w", name, err)
+			return nil, fmt.Errorf("profile %s: listen: %w", e.Name, err)
 		}
 		key := addr.String()
 		if other, ok := seen[key]; ok {
-			return nil, fmt.Errorf("profiles %s and %s both listen on %s", other, name, key)
+			return nil, fmt.Errorf("profiles %s and %s both listen on %s", other, e.Name, key)
 		}
-		seen[key] = name
-		e := Endpoint{Name: name, Listen: p.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}
-		if u := p.Upstream; u.BaseURL != "" {
-			e.Upstream.BaseURL = u.BaseURL
-		}
-		if u := p.Upstream; u.Proxy != "" {
-			e.Upstream.Proxy = u.Proxy
-		}
-		if u := p.Upstream; u.CAFile != "" {
-			e.Upstream.CAFile = expandHome(u.CAFile)
-		}
-		if u := p.Upstream; u.AuthHeaders != nil {
-			e.Upstream.AuthHeaders = u.AuthHeaders
-		}
-		if p.InjectNotice != nil {
-			e.InjectNotice = *p.InjectNotice
-		}
-		out = append(out, e)
+		seen[key] = e.Name
 	}
 	return out, nil
+}
+
+// Endpoints is Select("", ""): every listener.
+func (c *Config) Endpoints() ([]Endpoint, error) { return c.Select("", "") }
+
+// endpoint resolves profile name against the top-level defaults.
+func (c *Config) endpoint(name string) Endpoint {
+	p := c.Profiles[name]
+	e := Endpoint{Name: name, Listen: p.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}
+	if u := p.Upstream; u.BaseURL != "" {
+		e.Upstream.BaseURL = u.BaseURL
+	}
+	if u := p.Upstream; u.Proxy != "" {
+		e.Upstream.Proxy = u.Proxy
+	}
+	if u := p.Upstream; u.CAFile != "" {
+		e.Upstream.CAFile = expandHome(u.CAFile)
+	}
+	if u := p.Upstream; u.AuthHeaders != nil {
+		e.Upstream.AuthHeaders = u.AuthHeaders
+	}
+	if p.InjectNotice != nil {
+		e.InjectNotice = *p.InjectNotice
+	}
+	return e
 }
 
 // Notice reports whether the system prompt notice is injected (default true).

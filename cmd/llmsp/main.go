@@ -20,7 +20,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -117,25 +116,9 @@ func serve(args []string) error {
 		return err
 	}
 	cfg := e.cfg
-	if listen != "" && len(cfg.Profiles) == 0 {
-		cfg.Listen = listen
-	}
-	endpoints, err := cfg.Endpoints()
+	endpoints, err := cfg.Select(profile, listen)
 	if err != nil {
 		return err
-	}
-	if profile != "" {
-		i := slices.IndexFunc(endpoints, func(ep config.Endpoint) bool { return ep.Name == profile })
-		if len(cfg.Profiles) == 0 || i < 0 {
-			return fmt.Errorf("-profile %s: no such profile in the config", profile)
-		}
-		endpoints = endpoints[i : i+1]
-	}
-	if listen != "" && len(cfg.Profiles) > 0 {
-		if profile == "" {
-			return errors.New("-listen with profiles needs -profile: it sets the listen address of one profile")
-		}
-		endpoints[0].Listen = listen
 	}
 	det, err := e.detector()
 	if err != nil {
@@ -189,7 +172,7 @@ func serve(args []string) error {
 			InjectNotice: ep.InjectNotice,
 			Log:          plog,
 			Profile:      ep.Name,
-			Health:       st.Ping,
+			Health:       st.Check,
 		}
 		ln, err := net.Listen("tcp", ep.Listen)
 		if err != nil {
