@@ -81,6 +81,33 @@ func TestKnownValueWithoutContext(t *testing.T) {
 	}
 }
 
+// A known value inside a longer run of ASCII letters and digits is a
+// different value and is not masked in part. Next to punctuation, Japanese
+// text, or after an escape (\n, %3D), it is still masked.
+func TestKnownValueBoundary(t *testing.T) {
+	m, _ := newMasker(t)
+	card := strings.ReplaceAll(testsecret.Card(), " ", "")
+	if out, _ := m.String("card "+card, Stats{}, nil); strings.Contains(out, card) {
+		t.Fatalf("not masked: %s", out)
+	}
+	for _, in := range []string{card + "2112", "9" + card, "id" + card + "x"} {
+		if out, _ := m.String(in, Stats{}, nil); out != in {
+			t.Errorf("%q: masked in part: %s", in, out)
+		}
+	}
+	for _, in := range []string{
+		"(" + card + ")",
+		"no=" + card + ".",
+		"カード番号" + card + "です",
+		`"line\n` + card + `"`,
+		"q=a%3D" + card,
+	} {
+		if out, _ := m.String(in, Stats{}, nil); strings.Contains(out, card) {
+			t.Errorf("%q: not masked: %s", in, out)
+		}
+	}
+}
+
 func TestAllowlist(t *testing.T) {
 	m, _ := newMasker(t, `@corp\.dev$`)
 	out, _ := m.String("mail bob@corp.dev", Stats{}, nil)
@@ -220,13 +247,13 @@ func TestFieldValuePropagates(t *testing.T) {
 }
 
 // Field-derived values follow the same known-value policy as every other
-// value: at least MinKnownLen bytes, matched anywhere. A shorter value is
-// masked in its field but not in free text.
+// value: at least MinKnownLen bytes, not part of a longer word. A shorter
+// value is masked in its field but not in free text.
 func TestFieldValueKnownPolicy(t *testing.T) {
 	m, _ := newMasker(t)
 	m.String("first_name: Bob\nlast_name: Jordan\n", Stats{}, nil)
 	out, _ := m.String("Bob met Jordan in Jordanian", Stats{}, nil)
-	if !strings.HasPrefix(out, "Bob met __LLMSP_NAME_") || strings.Contains(out, "Jordan") {
+	if !strings.HasPrefix(out, "Bob met __LLMSP_NAME_") || !strings.HasSuffix(out, " in Jordanian") || strings.Count(out, "Jordan") != 1 {
 		t.Fatalf("policy changed: %s", out)
 	}
 }

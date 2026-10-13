@@ -188,7 +188,9 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind, field: d.Field})
 	}
 	// Values seen before, e.g. a secret the model wrote back into code after
-	// we unmasked it, which no longer has the context a detector needs.
+	// we unmasked it, which no longer has the context a detector needs. A
+	// match inside a longer run of letters and digits is a different value
+	// and is left to the detectors.
 	for _, v := range known {
 		if len(v) < MinKnownLen {
 			break
@@ -199,6 +201,10 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 				break
 			}
 			start := off + i
+			if !standalone(s, start, start+len(v)) {
+				off = start + 1
+				continue
+			}
 			spans = append(spans, span{start: start, end: start + len(v), kind: "KNOWN"})
 			off = start + len(v)
 		}
@@ -285,6 +291,36 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	}
 	b.WriteString(s[last:])
 	return b.String(), nil
+}
+
+// standalone reports whether s[start:end] is not part of a longer run of
+// ASCII letters and digits, which would be a different value that merely
+// contains a known one (a card number followed by more digits). Other
+// characters are boundaries, as for \b in the rules: Japanese text puts no
+// space between words (カード番号1234..., 田中さん). A letter after a
+// backslash (\n) or the last digit of a percent escape (%3D) ends an escape,
+// not a word, so a value right after one is still standalone.
+func standalone(s string, start, end int) bool {
+	if isWord(s[start]) && start > 0 && isWord(s[start-1]) && !endsEscape(s, start-1) {
+		return false
+	}
+	return !(isWord(s[end-1]) && end < len(s) && isWord(s[end]))
+}
+
+func isWord(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+}
+
+// endsEscape reports whether the byte at i ends a backslash or percent escape.
+func endsEscape(s string, i int) bool {
+	if i >= 1 && s[i-1] == '\\' {
+		return true
+	}
+	return i >= 2 && s[i-2] == '%' && isHex(s[i-1]) && isHex(s[i])
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 func overlapsAny(sp span, chosen []span) bool {

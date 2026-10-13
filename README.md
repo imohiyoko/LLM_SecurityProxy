@@ -65,7 +65,8 @@ llmsp rules test notes.txt    # what would be masked (nothing is stored or sent)
 ```
 
 A value that was masked once is masked everywhere afterwards, even without the
-context that first revealed it.
+context that first revealed it, unless it is part of a longer run of ASCII letters
+and digits (`<card number>2112` is a different value and is left as it is).
 
 ### Sharing rulesets with a team
 
