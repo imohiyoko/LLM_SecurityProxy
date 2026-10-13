@@ -1,7 +1,7 @@
 // Command llmsp is a local proxy that masks sensitive values before they
 // reach an LLM API and restores them in the response.
 //
-//	llmsp [serve] [-config PATH] [-listen ADDR]   run the proxy
+//	llmsp [serve] [-config PATH] [-listen ADDR]   run the proxy (one listener per profile)
 //	llmsp rules list [-config PATH]               show rulesets and rules
 //	llmsp rules test [-config PATH] [FILE]        show what would be masked
 package main
@@ -108,16 +108,20 @@ func (e *env) detector() (*detect.Detector, error) {
 func serve(args []string) error {
 	var listen string
 	e, err := load("serve", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&listen, "listen", "", "listen address (overrides config)")
+		fs.StringVar(&listen, "listen", "", "listen address (overrides config; not with profiles)")
 	})
 	if err != nil {
 		return err
 	}
 	cfg := e.cfg
 	if listen != "" {
+		if len(cfg.Profiles) > 0 {
+			return errors.New("-listen cannot be used with profiles; set listen in each profile")
+		}
 		cfg.Listen = listen
 	}
-	if err := checkLoopback(cfg); err != nil {
+	endpoints, err := cfg.Endpoints()
+	if err != nil {
 		return err
 	}
 	det, err := e.detector()
@@ -128,34 +132,66 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Set up every listener before serving any, so a bad profile fails startup.
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	var servers []*http.Server
+	var listeners []net.Listener
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	// One masker and store for all profiles: a value masked for one client
+	// gets the same placeholder for another, and restoring stays scoped to
+	// the request that issued it.
+	masker := mask.New(det, st, allow)
+	for _, ep := range endpoints {
+		if err := checkLoopback(ep.Listen, cfg.AllowNonLoopback); err != nil {
+			return fmt.Errorf("profile %s: %w", ep.Name, err)
+		}
+		upstream, err := url.Parse(ep.Upstream.BaseURL)
+		if err != nil {
+			return fmt.Errorf("profile %s: upstream.base_url: %w", ep.Name, err)
+		}
+		client, err := newClient(ep.Upstream)
+		if err != nil {
+			return fmt.Errorf("profile %s: %w", ep.Name, err)
+		}
+		plog := log
+		if len(cfg.Profiles) > 0 {
+			plog = log.With("profile", ep.Name)
+		}
+		srv := &proxy.Server{
+			Upstream:     upstream,
+			Client:       client,
+			Masker:       masker,
+			Resolver:     st,
+			AuthHeaders:  ep.Upstream.AuthHeaders,
+			InjectNotice: ep.InjectNotice,
+			Log:          plog,
+		}
+		ln, err := net.Listen("tcp", ep.Listen)
+		if err != nil {
+			return fmt.Errorf("profile %s: %w", ep.Name, err)
+		}
+		listeners = append(listeners, ln)
+		servers = append(servers, &http.Server{Handler: srv})
+		plog.Info("llmsp listening", "addr", ep.Listen, "upstream", upstream.String(),
+			"data_dir", cfg.DataDir, "rules", len(det.Rules()))
+	}
 
-	upstream, err := url.Parse(cfg.Upstream.BaseURL)
-	if err != nil {
-		return fmt.Errorf("upstream.base_url: %w", err)
+	// The first listener to fail stops the process; a supervisor restarts it.
+	errc := make(chan error, len(servers))
+	for i, srv := range servers {
+		go func() { errc <- srv.Serve(listeners[i]) }()
 	}
-	client, err := newClient(cfg.Upstream)
-	if err != nil {
-		return err
-	}
-
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	srv := &proxy.Server{
-		Upstream:     upstream,
-		Client:       client,
-		Masker:       mask.New(det, st, allow),
-		Resolver:     st,
-		AuthHeaders:  cfg.Upstream.AuthHeaders,
-		InjectNotice: cfg.Notice(),
-		Log:          log,
-	}
-	log.Info("llmsp listening", "addr", cfg.Listen, "upstream", upstream.String(),
-		"data_dir", cfg.DataDir, "rules", len(det.Rules()))
-	return (&http.Server{Addr: cfg.Listen, Handler: srv}).ListenAndServe()
+	return <-errc
 }
 
 func rulesList(args []string) error {
@@ -229,13 +265,13 @@ func rulesTest(args []string) error {
 
 // checkLoopback refuses non-local listeners: anyone who can reach the proxy
 // can read restored values in its responses.
-func checkLoopback(cfg *config.Config) error {
-	host, _, err := net.SplitHostPort(cfg.Listen)
+func checkLoopback(listen string, allowNonLoopback bool) error {
+	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 	ip := net.ParseIP(host)
-	if host == "localhost" || (ip != nil && ip.IsLoopback()) || cfg.AllowNonLoopback {
+	if host == "localhost" || (ip != nil && ip.IsLoopback()) || allowNonLoopback {
 		return nil
 	}
 	return errors.New("listen address is not loopback; set allow_non_loopback: true if you really mean it")
