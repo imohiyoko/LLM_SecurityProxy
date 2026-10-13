@@ -8,9 +8,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +28,27 @@ type Config struct {
 	Rulesets         Rulesets `yaml:"rulesets"`
 	// Allowlist values are never masked, whichever rule matched them.
 	Allowlist []string `yaml:"allowlist"`
+	// Profiles are named listeners, each with its own upstream: one per
+	// client, say. Unset upstream fields and inject_notice fall back to the
+	// top-level ones. With profiles, the top-level listen is not used.
+	Profiles map[string]Profile `yaml:"profiles"`
+
+	listenSet bool
+}
+
+// Profile is one listener and where its requests go.
+type Profile struct {
+	Listen       string   `yaml:"listen"`
+	InjectNotice *bool    `yaml:"inject_notice"`
+	Upstream     Upstream `yaml:"upstream"`
+}
+
+// Endpoint is a resolved profile: what one listener serves.
+type Endpoint struct {
+	Name         string
+	Listen       string
+	Upstream     Upstream
+	InjectNotice bool
 }
 
 // Upstream describes where requests go.
@@ -75,6 +98,7 @@ func Load(path string, mustExist bool) (*Config, error) {
 	default:
 		return nil, err
 	}
+	c.listenSet = c.Listen != ""
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8787"
 	}
@@ -89,7 +113,56 @@ func Load(path string, mustExist bool) (*Config, error) {
 	}
 	c.DataDir = expandHome(c.DataDir)
 	c.Upstream.CAFile = expandHome(c.Upstream.CAFile)
+	if len(c.Profiles) > 0 && c.listenSet {
+		return nil, fmt.Errorf("config %s: listen and profiles are both set; give each profile its own listen", path)
+	}
+	if _, err := c.Endpoints(); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	return c, nil
+}
+
+var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// Endpoints returns the listeners to serve, sorted by name. Without profiles
+// it is the top-level listen and upstream, named "default".
+func (c *Config) Endpoints() ([]Endpoint, error) {
+	if len(c.Profiles) == 0 {
+		return []Endpoint{{Name: "default", Listen: c.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}}, nil
+	}
+	var out []Endpoint
+	seen := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+		p := c.Profiles[name]
+		if !profileName.MatchString(name) {
+			return nil, fmt.Errorf("profile %q: name must be lowercase letters, digits, - and _", name)
+		}
+		if p.Listen == "" {
+			return nil, fmt.Errorf("profile %s: listen is required", name)
+		}
+		if other, ok := seen[p.Listen]; ok {
+			return nil, fmt.Errorf("profiles %s and %s both listen on %s", other, name, p.Listen)
+		}
+		seen[p.Listen] = name
+		e := Endpoint{Name: name, Listen: p.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}
+		if u := p.Upstream; u.BaseURL != "" {
+			e.Upstream.BaseURL = u.BaseURL
+		}
+		if u := p.Upstream; u.Proxy != "" {
+			e.Upstream.Proxy = u.Proxy
+		}
+		if u := p.Upstream; u.CAFile != "" {
+			e.Upstream.CAFile = expandHome(u.CAFile)
+		}
+		if u := p.Upstream; u.AuthHeaders != nil {
+			e.Upstream.AuthHeaders = u.AuthHeaders
+		}
+		if p.InjectNotice != nil {
+			e.InjectNotice = *p.InjectNotice
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // Notice reports whether the system prompt notice is injected (default true).

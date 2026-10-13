@@ -34,6 +34,33 @@ claude
 Outbound traffic uses `HTTPS_PROXY` / `HTTP_PROXY`, or `upstream.proxy` in the
 config. See [`config.example.yaml`](config.example.yaml).
 
+### One endpoint per client
+
+`profiles` runs several listeners in one process, each with its own upstream
+(base URL, outbound proxy, CA file, credential headers). Point each client at
+its own port:
+
+```yaml
+upstream:                 # defaults for every profile
+  base_url: https://api.anthropic.com
+profiles:
+  claude:
+    listen: 127.0.0.1:8787
+  codex:
+    listen: 127.0.0.1:8788
+    upstream:
+      base_url: https://api.openai.com/v1
+      auth_headers: [Authorization]
+```
+
+Log lines carry `profile=<name>`. All profiles share one key, database and rule
+set, so a value gets the same placeholder whichever client sent it; a response
+still only restores the placeholders issued for its own request.
+
+Requests are masked whatever the API, but placeholders are restored only in
+Anthropic Messages responses for now. Behind an OpenAI-style upstream the
+client sees placeholders in replies and tool calls.
+
 ## Rules
 
 Detection rules are grouped into **rulesets**, YAML files with an ID. A rule is
