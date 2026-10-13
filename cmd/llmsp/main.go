@@ -1,7 +1,8 @@
 // Command llmsp is a local proxy that masks sensitive values before they
 // reach an LLM API and restores them in the response.
 //
-//	llmsp [serve] [-config PATH] [-listen ADDR]   run the proxy (one listener per profile)
+//	llmsp [serve] [-config PATH] [-profile NAME] [-listen ADDR]
+//	                                              run the proxy (one listener per profile)
 //	llmsp rules list [-config PATH]               show rulesets and rules
 //	llmsp rules test [-config PATH] [FILE]        show what would be masked
 package main
@@ -19,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -106,23 +108,34 @@ func (e *env) detector() (*detect.Detector, error) {
 }
 
 func serve(args []string) error {
-	var listen string
+	var listen, profile string
 	e, err := load("serve", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&listen, "listen", "", "listen address (overrides config; not with profiles)")
+		fs.StringVar(&listen, "listen", "", "listen address (overrides config; with profiles, only with -profile)")
+		fs.StringVar(&profile, "profile", "", "serve only this profile")
 	})
 	if err != nil {
 		return err
 	}
 	cfg := e.cfg
-	if listen != "" {
-		if len(cfg.Profiles) > 0 {
-			return errors.New("-listen cannot be used with profiles; set listen in each profile")
-		}
+	if listen != "" && len(cfg.Profiles) == 0 {
 		cfg.Listen = listen
 	}
 	endpoints, err := cfg.Endpoints()
 	if err != nil {
 		return err
+	}
+	if profile != "" {
+		i := slices.IndexFunc(endpoints, func(ep config.Endpoint) bool { return ep.Name == profile })
+		if len(cfg.Profiles) == 0 || i < 0 {
+			return fmt.Errorf("-profile %s: no such profile in the config", profile)
+		}
+		endpoints = endpoints[i : i+1]
+	}
+	if listen != "" && len(cfg.Profiles) > 0 {
+		if profile == "" {
+			return errors.New("-listen with profiles needs -profile: it sets the listen address of one profile")
+		}
+		endpoints[0].Listen = listen
 	}
 	det, err := e.detector()
 	if err != nil {
@@ -175,6 +188,8 @@ func serve(args []string) error {
 			AuthHeaders:  ep.Upstream.AuthHeaders,
 			InjectNotice: ep.InjectNotice,
 			Log:          plog,
+			Profile:      ep.Name,
+			Health:       st.Ping,
 		}
 		ln, err := net.Listen("tcp", ep.Listen)
 		if err != nil {

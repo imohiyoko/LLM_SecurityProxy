@@ -208,6 +208,9 @@ func (s *Store) Kind(id string) (string, bool) {
 	return e.kind, ok
 }
 
+// Ping checks that the database can still be reached.
+func (s *Store) Ping() error { return s.db.Ping() }
+
 // Known returns every stored value, longest first, and a version that changes
 // whenever the set changes. The slice must not be modified.
 func (s *Store) Known() ([]string, uint64) {

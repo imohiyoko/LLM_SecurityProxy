@@ -42,7 +42,16 @@ type Server struct {
 	AuthHeaders  []string
 	InjectNotice bool
 	Log          *slog.Logger
+	// Profile names this listener in health responses.
+	Profile string
+	// Health, if set, is checked by the health endpoint besides masking.
+	Health func() error
 }
+
+// HealthPath is answered by llmsp itself, never forwarded: it reports
+// whether this listener can mask, so scripts can tell a working proxy from
+// a port that is merely open.
+const HealthPath = "/_llmsp/health"
 
 var hopHeaders = []string{
 	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
@@ -50,6 +59,10 @@ var hopHeaders = []string{
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == HealthPath {
+		s.health(w)
+		return
+	}
 	log := s.Log.With("method", r.Method, "path", r.URL.Path)
 
 	body, stats, ids, err := s.maskRequest(r)
@@ -132,6 +145,34 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info("proxied", attrs...)
+}
+
+// health masks a probe string and checks Health. It answers 200 with
+// {"status":"ok"} or 503 with {"status":"error","error":...}.
+func (s *Server) health(w http.ResponseWriter) {
+	body := map[string]any{"status": "ok", "profile": s.Profile}
+	status := http.StatusOK
+	if err := s.check(); err != nil {
+		body["status"], body["error"] = "error", err.Error()
+		status = http.StatusServiceUnavailable
+		s.Log.Error("health check failed", "err", err)
+	}
+	b, _ := json.Marshal(body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	w.Write(b)
+}
+
+func (s *Server) check() error {
+	if _, err := s.Masker.String("llmsp health probe", mask.Stats{}, nil); err != nil {
+		return fmt.Errorf("masking: %w", err)
+	}
+	if s.Health != nil {
+		if err := s.Health(); err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+	}
+	return nil
 }
 
 type httpError struct {

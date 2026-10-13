@@ -54,6 +54,7 @@ func newFixture(t *testing.T, respond func(w http.ResponseWriter, body []byte)) 
 		Client:       up.Client(),
 		Masker:       mask.New(det, st, nil),
 		Resolver:     st,
+		Health:       st.Ping,
 		AuthHeaders:  []string{"Authorization", "X-Api-Key"},
 		InjectNotice: true,
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -558,5 +559,31 @@ func TestRekeyCollision(t *testing.T) {
 	}
 	if len(m) != 3 || m["X"] != 2 || m["X (2)"] != 3 || m["X (3)"] != 1 {
 		t.Fatalf("strict rekey: %v", m)
+	}
+}
+
+func TestHealthAnsweredLocally(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+		t.Error("health request forwarded upstream")
+	})
+	resp, err := http.Get(f.proxy.URL + HealthPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), `"status":"ok"`) {
+		t.Fatalf("health = %d %s", resp.StatusCode, b)
+	}
+
+	f.store.Close() // a broken store must show
+	resp, err = http.Get(f.proxy.URL + HealthPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(b), `"status":"error"`) {
+		t.Fatalf("health with closed store = %d %s", resp.StatusCode, b)
 	}
 }
