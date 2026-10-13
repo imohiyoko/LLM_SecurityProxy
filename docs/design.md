@@ -133,7 +133,8 @@ value is.
 ### Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value
-   already in the store (exact match, minimum length 6). An existing
+   already in the store (exact match, minimum length 6, not inside a longer
+   run of ASCII letters and digits). An existing
    placeholder is protected only if the store issued its ID under exactly
    that kind; any other placeholder-shaped text is masked as a whole, since
    its kind segment can hide a token that detectors miss there.
@@ -155,14 +156,18 @@ contains the real value, often without the context (`password=`) that a
 detector needs. Exact matching against stored values masks it again.
 
 Values found by field rules go through the same pass with the same policy: at
-least 6 bytes, matched anywhere, persisted in the store like every other
-value. So a name seen once in a field (`"userName": "Jane Doe"`) is masked in
+least 6 bytes, matched anywhere outside a longer word, persisted in the
+store like every other value. So a name seen once in a field (`"userName": "Jane Doe"`) is masked in
 later free text (`Jane Doe joined the call`), which is the point of field
 rules. The trade-offs are accepted deliberately:
 
 - A short name (`Bob`) is masked in its field but not in free text.
-- A name of 6 bytes or more is masked inside longer words too (`Jordan` in
-  `Jordanian`). A two-character CJK name is already 6 bytes.
+- A known value inside a longer run of ASCII letters and digits is a
+  different value and is not masked (`Jordan` in `Jordanian`, a card number
+  followed by more digits); masking part of it would also leave the rest in
+  plaintext. Any other character is a boundary, so a value next to Japanese
+  text (`カード番号1234...`, a two-character CJK name before `さん`) or after
+  an escape (`\n`, `%3D`) is still masked.
 - Masking a common word everywhere is visible to the model as a placeholder.
   Account names that are common words (`root`, `postgres`, `deploy`) are on
   the builtin allow list for this reason.
