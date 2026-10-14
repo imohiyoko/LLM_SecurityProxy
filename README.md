@@ -145,6 +145,41 @@ address (`http://127.0.0.1:8787`, no `/v1`); it then requests `/responses`.
 count. The health endpoint answers on the routing port, and below a path
 prefix for that route's profile.
 
+### Relaxing for a while
+
+Keep strict profiles in force and switch to a looser one only for a set time.
+A profile with `relax` may serve the requests routed to the profiles it
+`replaces`; how long is set per profile:
+
+```yaml
+profiles:
+  strict: {}
+  loose:
+    rulesets:
+      disable: [builtin/pii:name]
+    relax:
+      replaces: [strict, default]   # default: requests no route matched
+      default: 1h                   # when -for is not given
+      max: 8h                       # longest allowed
+routes:
+  - client: claude-code
+    profile: strict
+```
+
+```sh
+llmsp relax loose            # for relax.default
+llmsp relax -for 2h loose    # up to relax.max
+llmsp relax                  # what is in effect, and for how long
+llmsp relax -off             # end it now
+```
+
+The state is `relax.json` in the data directory. The running proxy reads it
+within a second and checks the expiry on every request, so a relaxation ends on
+time even across restarts; an unreadable or over-long one is ignored. Requests
+served this way are logged with `relaxed_from` and `relaxed_until`, and the
+start and end are logged once. Only the routing listener relaxes; a profile's
+own `listen` is not affected.
+
 Requests are masked whatever the API. Placeholders are restored in JSON
 replies of any API, and in streamed replies of Anthropic Messages, OpenAI Chat
 Completions and OpenAI Responses, including tool call arguments; streams in

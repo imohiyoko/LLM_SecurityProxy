@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -72,6 +73,20 @@ type Profile struct {
 	Rulesets     ProfileRulesets `yaml:"rulesets"`
 	// Allowlist is added to the top-level one.
 	Allowlist []string `yaml:"allowlist"`
+	// Relax lets this profile stand in for stricter ones for a while (see
+	// `llmsp relax`).
+	Relax *Relax `yaml:"relax"`
+}
+
+// Relax is how a profile may be used temporarily instead of stricter ones.
+type Relax struct {
+	// Replaces are the profiles whose requests it serves while relaxed
+	// ("default": requests no route matched).
+	Replaces []string `yaml:"replaces"`
+	// Default is the duration when none is given; Max the longest allowed.
+	// Default omitted means Max.
+	Default time.Duration `yaml:"default"`
+	Max     time.Duration `yaml:"max"`
 }
 
 // ProfileRulesets turns rulesets or rules on or off for one profile, over the
@@ -171,6 +186,11 @@ func Load(path string, mustExist bool) (*Config, error) {
 			return nil, fmt.Errorf("config %s: profile %s: listen is required", path, name)
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+		if err := c.checkRelax(name); err != nil {
+			return nil, fmt.Errorf("config %s: profile %s: relax: %w", path, name, err)
+		}
+	}
 	for i, r := range c.Routes {
 		if err := c.checkRoute(r); err != nil {
 			return nil, fmt.Errorf("config %s: routes[%d]: %w", path, i, err)
@@ -180,6 +200,43 @@ func Load(path string, mustExist bool) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+func (c *Config) checkRelax(name string) error {
+	r := c.Profiles[name].Relax
+	if r == nil {
+		return nil
+	}
+	if len(c.Routes) == 0 {
+		return errors.New("needs routes: a relaxed profile serves requests of the routing listener")
+	}
+	if len(r.Replaces) == 0 {
+		return errors.New("replaces is required")
+	}
+	for _, p := range r.Replaces {
+		if _, ok := c.Profiles[p]; (!ok && p != "default") || p == name {
+			return fmt.Errorf("replaces: %s: no such other profile", p)
+		}
+	}
+	if r.Max <= 0 {
+		return errors.New("max is required (e.g. 8h)")
+	}
+	if r.Default < 0 || r.Default > r.Max {
+		return errors.New("default must be between 0 and max")
+	}
+	if r.Default == 0 {
+		r.Default = r.Max
+	}
+	return nil
+}
+
+// RelaxLimit is the longest name may be relaxed to; ok false if it may not.
+func (c *Config) RelaxLimit(name string) (time.Duration, bool) {
+	p, ok := c.Profiles[name]
+	if !ok || p.Relax == nil {
+		return 0, false
+	}
+	return p.Relax.Max, true
 }
 
 // Clients are the names Route.Client accepts; package route detects them.
@@ -305,6 +362,9 @@ func override(ids, drop, add []string) []string {
 
 // Endpoints is Select("", ""): every listener.
 func (c *Config) Endpoints() ([]Endpoint, error) { return c.Select("", "") }
+
+// Endpoint resolves profile name, which must exist.
+func (c *Config) Endpoint(name string) Endpoint { return c.endpoint(name) }
 
 // endpoint resolves profile name against the top-level defaults.
 func (c *Config) endpoint(name string) Endpoint {

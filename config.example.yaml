@@ -46,6 +46,13 @@ upstream:
 #     profile: strict
 #   - path_prefix: /cline          # base URL http://127.0.0.1:8787/cline
 #     profile: cline
+# A profile may also stand in for stricter ones for a while, with
+# `llmsp relax [-for 2h] NAME`; the duration is limited per profile:
+#   loose:
+#     relax:
+#       replaces: [claude, default]
+#       default: 1h
+#       max: 8h
 
 # Where master.key and llmsp.db live. Default: the directory of this file.
 # data_dir: ~/.local/share/llmsp

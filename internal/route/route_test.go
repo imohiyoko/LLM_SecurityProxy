@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/config"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/relax"
 )
 
 func TestClientsMatchConfig(t *testing.T) {
@@ -91,9 +93,9 @@ func TestRouter(t *testing.T) {
 	}
 	rt := &Router{
 		Targets: []Target{
-			{compile(config.Route{Header: map[string]string{"X-Llmsp-Profile": "^strict$"}}), record("strict", &got)},
-			{compile(config.Route{Client: "claude-code"}), record("claude", &got)},
-			{compile(config.Route{PathPrefix: "/cline"}), record("cline", &got)},
+			{Rule: compile(config.Route{Header: map[string]string{"X-Llmsp-Profile": "^strict$"}}), Handler: record("strict", &got)},
+			{Rule: compile(config.Route{Client: "claude-code"}), Handler: record("claude", &got)},
+			{Rule: compile(config.Route{PathPrefix: "/cline"}), Handler: record("cline", &got)},
 		},
 		Fallback: record("default", &got),
 	}
@@ -116,5 +118,49 @@ func TestRouter(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRouterRelax(t *testing.T) {
+	var got seen
+	dir := t.TempDir()
+	path := relax.Path(dir)
+	rule, err := Compile(config.Route{Client: "claude-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &Router{
+		Targets:         []Target{{Rule: rule, Profile: "strict", Handler: record("strict", &got)}},
+		Fallback:        record("default", &got),
+		FallbackProfile: "default",
+		Relax:           &relax.Watcher{Path: path, Limit: func(string) (time.Duration, bool) { return time.Hour, true }},
+		Relaxed:         map[string]Relaxed{"loose": {Replaces: []string{"strict"}, Handler: record("loose", &got)}},
+	}
+	send := func(h map[string]string) string {
+		got = seen{}
+		rt.ServeHTTP(httptest.NewRecorder(), req("/v1/messages", h))
+		return got.name
+	}
+	claude := map[string]string{"X-Claude-Code-Session-Id": "s"}
+	if n := send(claude); n != "strict" {
+		t.Fatalf("not relaxed: got %s", n)
+	}
+	now := time.Now()
+	if err := relax.Save(path, relax.State{Profile: "loose", Since: now.Add(-time.Minute), Until: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	rt.Relax = &relax.Watcher{Path: path, Limit: rt.Relax.Limit} // read the new file now
+	if n := send(claude); n != "loose" {
+		t.Errorf("relaxed: got %s, want loose", n)
+	}
+	if n := send(nil); n != "default" {
+		t.Errorf("a profile it does not replace: got %s, want default", n)
+	}
+	if err := relax.Save(path, relax.State{Profile: "loose", Since: now.Add(-time.Hour), Until: now.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	rt.Relax = &relax.Watcher{Path: path, Limit: rt.Relax.Limit}
+	if n := send(claude); n != "strict" {
+		t.Errorf("expired: got %s, want strict", n)
 	}
 }
