@@ -207,3 +207,89 @@ profiles:
 		t.Error("Masking(nope): want an error")
 	}
 }
+
+func TestRoutes(t *testing.T) {
+	c, err := load(t, `
+listen: 127.0.0.1:9000
+upstream:
+  base_url: https://llm.example.com
+profiles:
+  claude:
+    rulesets:
+      enable: [builtin/network]
+  codex:
+    upstream:
+      base_url: https://openai.example.com/v1
+  own:
+    listen: 127.0.0.1:9001
+routes:
+  - client: claude-code
+    profile: claude
+  - client: codex
+    profile: codex
+  - profile: default
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eps, err := c.Endpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 2 || eps[0].Name != "default" || eps[0].Listen != "127.0.0.1:9000" || eps[1].Name != "own" {
+		t.Fatalf("want the routing listener and own: got %+v", eps)
+	}
+	rs := eps[0].Routes
+	if len(rs) != 3 || rs[0].Endpoint.Name != "claude" || fmt.Sprint(rs[0].Endpoint.Enable) != "[builtin/network]" ||
+		rs[1].Endpoint.Upstream.BaseURL != "https://openai.example.com/v1" || rs[2].Endpoint.Name != "default" {
+		t.Errorf("routes resolve to their profiles: got %+v", rs)
+	}
+	if eps[1].Routes != nil {
+		t.Error("only the top-level listener routes")
+	}
+
+	for name, tc := range map[string]struct{ profile, listen, want string }{
+		"default only":         {"default", "", "default@127.0.0.1:9000"},
+		"routed, own listen":   {"codex", "127.0.0.1:9100", "codex@127.0.0.1:9100"},
+		"routed, no listen":    {"codex", "", "error: served through routes"},
+		"all, listen override": {"", "127.0.0.1:9100", "error: select one profile"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			eps, err := c.Select(tc.profile, tc.listen)
+			got := ""
+			if err != nil {
+				got = "error: " + err.Error()
+			} else {
+				got = eps[0].Name + "@" + eps[0].Listen
+			}
+			if want, isErr := strings.CutPrefix(tc.want, "error: "); isErr {
+				if !strings.Contains(got, want) {
+					t.Errorf("got %q, want an error containing %q", got, want)
+				}
+			} else if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRouteErrors(t *testing.T) {
+	const profiles = "profiles:\n  a: {}\nroutes:\n"
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"unknown profile":              {profiles + "  - profile: b\n", "no such profile"},
+		"no profile":                   {profiles + "  - client: codex\n", "profile is required"},
+		"unknown client":               {profiles + "  - client: vim\n    profile: a\n", "known clients"},
+		"bad pattern":                  {profiles + "  - header: {X-A: '('}\n    profile: a\n", "header X-A"},
+		"bad prefix":                   {profiles + "  - path_prefix: cline/\n    profile: a\n", "path_prefix"},
+		"catch-all not last":           {profiles + "  - profile: a\n  - client: codex\n    profile: a\n", "never used"},
+		"no routes, listen":            {"listen: 127.0.0.1:9000\nprofiles:\n  a:\n    listen: 127.0.0.1:9001\n", "both set"},
+		"no routes, no profile listen": {"profiles:\n  a: {}\n", "listen is required"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, tc.yaml)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}

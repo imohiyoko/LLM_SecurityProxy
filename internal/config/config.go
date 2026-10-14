@@ -33,8 +33,35 @@ type Config struct {
 	// client, say. Unset upstream fields and inject_notice fall back to the
 	// top-level ones. With profiles, the top-level listen is not used.
 	Profiles map[string]Profile `yaml:"profiles"`
+	// Routes pick a profile per request on the top-level listen address, by
+	// client, header or path prefix. The first match wins; a request no
+	// route matches uses the top-level settings. Profiles served only
+	// through routes need no listen of their own.
+	Routes []Route `yaml:"routes"`
 
 	listenSet bool
+}
+
+// Route sends matching requests to Profile. Every condition set must hold; a
+// route without conditions matches every request.
+type Route struct {
+	// Client is a known client, detected from the headers it sends: see
+	// package route.
+	Client string `yaml:"client"`
+	// Header maps header names to RE2 patterns the value must match; an
+	// empty pattern only requires the header to be present. Headers named
+	// X-Llmsp-* are never forwarded.
+	Header map[string]string `yaml:"header"`
+	// PathPrefix ("/cline") matches that path and paths below it; it is
+	// removed before the request is forwarded.
+	PathPrefix string `yaml:"path_prefix"`
+	Profile    string `yaml:"profile"`
+}
+
+// Routed is a route with its resolved profile.
+type Routed struct {
+	Route
+	Endpoint Endpoint
 }
 
 // Profile is one listener, where its requests go and how they are masked.
@@ -65,6 +92,9 @@ type Endpoint struct {
 	// patterns it never masks.
 	Enable, Disable []string
 	Allowlist       []string
+	// Routes, on the top-level listener only, pick another profile per
+	// request; this endpoint serves requests no route matches.
+	Routes []Routed
 }
 
 // Upstream describes where requests go.
@@ -129,19 +159,57 @@ func Load(path string, mustExist bool) (*Config, error) {
 	}
 	c.DataDir = expandHome(c.DataDir)
 	c.Upstream.CAFile = expandHome(c.Upstream.CAFile)
-	if len(c.Profiles) > 0 && c.listenSet {
-		return nil, fmt.Errorf("config %s: listen and profiles are both set; give each profile its own listen", path)
+	routed := len(c.Routes) > 0
+	if len(c.Profiles) > 0 && c.listenSet && !routed {
+		return nil, fmt.Errorf("config %s: listen and profiles are both set; give each profile its own listen, or add routes", path)
 	}
 	for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
 		if !profileName.MatchString(name) {
 			return nil, fmt.Errorf("config %s: profile %q: name must be lowercase letters, digits, - and _", path, name)
 		}
-		if c.Profiles[name].Listen == "" {
+		if c.Profiles[name].Listen == "" && !routed {
 			return nil, fmt.Errorf("config %s: profile %s: listen is required", path, name)
+		}
+	}
+	for i, r := range c.Routes {
+		if err := c.checkRoute(r); err != nil {
+			return nil, fmt.Errorf("config %s: routes[%d]: %w", path, i, err)
+		}
+		if r.matchesAll() && i < len(c.Routes)-1 {
+			return nil, fmt.Errorf("config %s: routes[%d] has no conditions, so the routes after it are never used", path, i)
 		}
 	}
 	return c, nil
 }
+
+// Clients are the names Route.Client accepts; package route detects them.
+var Clients = []string{"claude-code", "codex", "cline"}
+
+func (c *Config) checkRoute(r Route) error {
+	if r.Profile == "" {
+		return errors.New("profile is required")
+	}
+	if _, ok := c.Profiles[r.Profile]; !ok && r.Profile != "default" {
+		return fmt.Errorf("profile %s: no such profile", r.Profile)
+	}
+	if r.Client != "" && !slices.Contains(Clients, r.Client) {
+		return fmt.Errorf("client %q: known clients are %s", r.Client, strings.Join(Clients, ", "))
+	}
+	for name, pat := range r.Header {
+		if name == "" || strings.ContainsAny(name, " :") {
+			return fmt.Errorf("header %q: not a header name", name)
+		}
+		if _, err := regexp.Compile(pat); err != nil {
+			return fmt.Errorf("header %s: %w", name, err)
+		}
+	}
+	if p := r.PathPrefix; p != "" && (!strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") || strings.Contains(p, "//")) {
+		return fmt.Errorf("path_prefix %q: must start with / and not end with /", p)
+	}
+	return nil
+}
+
+func (r Route) matchesAll() bool { return r.Client == "" && len(r.Header) == 0 && r.PathPrefix == "" }
 
 var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
@@ -156,6 +224,16 @@ var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 	var out []Endpoint
 	switch {
+	case len(c.Routes) > 0 && (profile == "" || profile == "default"):
+		// The routing listener, then every profile with a listen of its own.
+		out = []Endpoint{c.router()}
+		if profile == "" {
+			for _, name := range slices.Sorted(maps.Keys(c.Profiles)) {
+				if c.Profiles[name].Listen != "" {
+					out = append(out, c.endpoint(name))
+				}
+			}
+		}
 	case len(c.Profiles) == 0 && (profile == "" || profile == "default"):
 		out = []Endpoint{c.base("default", c.Listen)}
 	case len(c.Profiles) == 0:
@@ -173,8 +251,14 @@ func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 		}
 		out = []Endpoint{c.endpoint(profile)}
 	}
+	if listen != "" && len(out) > 1 {
+		return nil, errors.New("listen override with several listeners: select one profile, or default for the routes")
+	}
 	if listen != "" {
 		out[0].Listen = listen
+	}
+	if out[0].Listen == "" {
+		return nil, fmt.Errorf("profile %s: no listen of its own; it is served through routes (or give -listen)", out[0].Name)
 	}
 	seen := map[string]string{}
 	for _, e := range out {
@@ -189,6 +273,19 @@ func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 		seen[key] = e.Name
 	}
 	return out, nil
+}
+
+// router is the top-level listener with its routes resolved.
+func (c *Config) router() Endpoint {
+	e := c.base("default", c.Listen)
+	for _, r := range c.Routes {
+		target := c.base("default", "")
+		if r.Profile != "default" {
+			target = c.endpoint(r.Profile)
+		}
+		e.Routes = append(e.Routes, Routed{Route: r, Endpoint: target})
+	}
+	return e
 }
 
 // base is an endpoint with only the top-level settings.
