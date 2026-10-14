@@ -65,9 +65,33 @@ settings are checked. Separate processes on one data directory share the key
 and database, and pick up values the others learned within a second; one
 process serving every profile shares them at once.
 
-Log lines carry `profile=<name>`. All profiles share one key, database and rule
-set, so a value gets the same placeholder whichever client sent it; a response
-still only restores the placeholders issued for its own request.
+Log lines carry `profile=<name>`. All profiles share one key and database, so a
+value gets the same placeholder whichever client sent it; a response still only
+restores the placeholders issued for its own request.
+
+Each profile can also mask differently. Its `rulesets.enable` / `disable`
+override the top-level selection for the IDs they name, and its `allowlist` is
+added to the top-level one:
+
+```yaml
+profiles:
+  standard:               # the top-level rules
+    listen: 127.0.0.1:8787
+  strict:
+    listen: 127.0.0.1:8788
+    rulesets:
+      enable: [builtin/network]
+  light:
+    listen: 127.0.0.1:8789
+    rulesets:
+      disable: [builtin/pii]
+```
+
+A value masked once by any profile is still masked by exact match in every
+profile, whatever its rules, so a lighter profile never sends what a stricter
+one has already masked. `llmsp profiles` lists the listeners with the number of
+rules each applies, and `llmsp rules list -profile NAME` /
+`llmsp rules test -profile NAME FILE` show one profile's rules.
 
 Requests are masked whatever the API. Placeholders are restored in JSON
 replies of any API, and in streamed replies of Anthropic Messages, OpenAI Chat
