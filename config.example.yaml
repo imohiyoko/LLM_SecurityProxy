@@ -24,7 +24,7 @@ upstream:
 # profiles:
 #   claude:                        # ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 #     listen: 127.0.0.1:8787
-#   codex:                         # base_url = "http://127.0.0.1:8788/v1"
+#   codex:                         # base_url = "http://127.0.0.1:8788"
 #     listen: 127.0.0.1:8788
 #     upstream:
 #       base_url: https://api.openai.com/v1
@@ -35,6 +35,17 @@ upstream:
 #       base_url: https://llm-gateway.example.internal
 #     rulesets:
 #       enable: [builtin/network]  # mask IPv4 addresses for this client only
+
+# Routes: one port for every client instead, choosing the profile per request
+# (first match wins; no match uses the top-level settings). Keep the top-level
+# `listen`; profiles reached only through routes need no listen.
+# routes:
+#   - client: claude-code          # also codex, cline
+#     profile: claude
+#   - header: {X-Llmsp-Profile: '^strict$'}
+#     profile: strict
+#   - path_prefix: /cline          # base URL http://127.0.0.1:8787/cline
+#     profile: cline
 
 # Where master.key and llmsp.db live. Default: the directory of this file.
 # data_dir: ~/.local/share/llmsp

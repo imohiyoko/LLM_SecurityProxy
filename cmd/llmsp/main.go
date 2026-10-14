@@ -3,7 +3,7 @@
 //
 //	llmsp [serve] [-config PATH] [-profile NAME] [-listen ADDR]
 //	                                              run the proxy (one listener per profile)
-//	llmsp profiles [-config PATH]                 list the listeners and their rules
+//	llmsp profiles [-config PATH]                 list the listeners, routes and their rules
 //	llmsp rules list [-config PATH] [-profile NAME]
 //	                                              show rulesets and rules
 //	llmsp rules test [-config PATH] [-profile NAME] [FILE]
@@ -18,12 +18,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -32,6 +34,7 @@ import (
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/proxy"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/route"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
 )
@@ -150,27 +153,31 @@ func serve(args []string) error {
 	// placeholder for another, and restoring stays scoped to the request that
 	// issued it. A value once masked for any profile is masked by exact match
 	// in every profile, whatever its own rules. Each profile has its own rules.
-	for _, ep := range endpoints {
+	named := len(cfg.Profiles) > 0 || len(cfg.Routes) > 0
+	// A profile reached by several routes, or also listening itself, is one
+	// handler.
+	handlers := map[string]*proxy.Server{}
+	handler := func(ep config.Endpoint) (*proxy.Server, error) {
+		if h, ok := handlers[ep.Name]; ok {
+			return h, nil
+		}
 		det, allow, err := e.masking(ep)
 		if err != nil {
-			return err
-		}
-		if err := checkLoopback(ep.Listen, cfg.AllowNonLoopback); err != nil {
-			return fmt.Errorf("profile %s: %w", ep.Name, err)
+			return nil, err
 		}
 		upstream, err := url.Parse(ep.Upstream.BaseURL)
 		if err != nil {
-			return fmt.Errorf("profile %s: upstream.base_url: %w", ep.Name, err)
+			return nil, fmt.Errorf("profile %s: upstream.base_url: %w", ep.Name, err)
 		}
 		client, err := newClient(ep.Upstream)
 		if err != nil {
-			return fmt.Errorf("profile %s: %w", ep.Name, err)
+			return nil, fmt.Errorf("profile %s: %w", ep.Name, err)
 		}
 		plog := log
-		if len(cfg.Profiles) > 0 {
+		if named {
 			plog = log.With("profile", ep.Name)
 		}
-		srv := &proxy.Server{
+		h := &proxy.Server{
 			Upstream:     upstream,
 			Client:       client,
 			Masker:       mask.New(det, st, allow),
@@ -181,14 +188,42 @@ func serve(args []string) error {
 			Profile:      ep.Name,
 			Health:       st.Check,
 		}
+		handlers[ep.Name] = h
+		plog.Info("profile ready", "upstream", upstream.String(), "rules", len(det.Rules()))
+		return h, nil
+	}
+	for _, ep := range endpoints {
+		if err := checkLoopback(ep.Listen, cfg.AllowNonLoopback); err != nil {
+			return fmt.Errorf("profile %s: %w", ep.Name, err)
+		}
+		fallback, err := handler(ep)
+		if err != nil {
+			return err
+		}
+		var h http.Handler = fallback
+		if len(ep.Routes) > 0 {
+			rt := &route.Router{Fallback: fallback}
+			for _, r := range ep.Routes {
+				rule, err := route.Compile(r.Route)
+				if err != nil {
+					return fmt.Errorf("route to %s: %w", r.Profile, err)
+				}
+				target, err := handler(r.Endpoint)
+				if err != nil {
+					return err
+				}
+				rt.Targets = append(rt.Targets, route.Target{Rule: rule, Handler: target})
+			}
+			h = rt
+		}
 		ln, err := net.Listen("tcp", ep.Listen)
 		if err != nil {
 			return fmt.Errorf("profile %s: %w", ep.Name, err)
 		}
 		listeners = append(listeners, ln)
-		servers = append(servers, &http.Server{Handler: srv})
-		plog.Info("llmsp listening", "addr", ep.Listen, "upstream", upstream.String(),
-			"data_dir", cfg.DataDir, "rules", len(det.Rules()))
+		servers = append(servers, &http.Server{Handler: h})
+		log.Info("llmsp listening", "addr", ep.Listen, "profile", ep.Name,
+			"routes", len(ep.Routes), "data_dir", cfg.DataDir)
 	}
 
 	// The first listener to fail stops the process; a supervisor restarts it.
@@ -211,15 +246,49 @@ func profiles(args []string) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "PROFILE\tLISTEN\tRULES\tALLOWLIST")
-	for _, ep := range endpoints {
+	fmt.Fprintln(w, "PROFILE\tLISTEN\tRULES\tALLOWLIST\tROUTE")
+	row := func(ep config.Endpoint, listen, how string) error {
 		det, allow, err := e.masking(ep)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\n", ep.Name, ep.Listen, len(det.Rules()), len(allow))
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\n", ep.Name, listen, len(det.Rules()), len(allow), how)
+		return nil
+	}
+	for _, ep := range endpoints {
+		// Routed profiles first, in matching order, then what is left.
+		for _, r := range ep.Routes {
+			if err := row(r.Endpoint, ep.Listen, describe(r.Route)); err != nil {
+				return err
+			}
+		}
+		how := "-"
+		if len(ep.Routes) > 0 {
+			how = "(no route matched)"
+		}
+		if err := row(ep, ep.Listen, how); err != nil {
+			return err
+		}
 	}
 	return w.Flush()
+}
+
+// describe is a route's conditions, for display.
+func describe(r config.Route) string {
+	var parts []string
+	if r.Client != "" {
+		parts = append(parts, "client="+r.Client)
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.Header)) {
+		parts = append(parts, fmt.Sprintf("header %s=~%q", name, r.Header[name]))
+	}
+	if r.PathPrefix != "" {
+		parts = append(parts, "path="+r.PathPrefix)
+	}
+	if len(parts) == 0 {
+		return "(any)"
+	}
+	return strings.Join(parts, " ")
 }
 
 // loadMasking loads the config and the masking settings of -profile.

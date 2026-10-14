@@ -93,6 +93,58 @@ one has already masked. `llmsp profiles` lists the listeners with the number of
 rules each applies, and `llmsp rules list -profile NAME` /
 `llmsp rules test -profile NAME FILE` show one profile's rules.
 
+### One port, a profile per client
+
+`routes` picks the profile per request on the top-level `listen` address, so
+every client can use the same port. The first route whose conditions all hold
+wins; a request no route matches uses the top-level settings. Profiles used
+only through routes need no `listen`.
+
+```yaml
+listen: 127.0.0.1:8787
+upstream:
+  base_url: https://api.anthropic.com
+profiles:
+  claude:
+    rulesets:
+      enable: [builtin/network]
+  codex:
+    upstream:
+      base_url: https://api.openai.com/v1
+      auth_headers: [Authorization]
+  cline:
+    rulesets:
+      disable: [builtin/pii:name]
+routes:
+  - client: claude-code       # Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+    profile: claude
+  - client: codex             # Codex: base_url = "http://127.0.0.1:8787"
+    profile: codex
+  - path_prefix: /cline       # Cline: base URL http://127.0.0.1:8787/cline
+    profile: cline
+  - header: {X-Llmsp-Profile: '^strict$'}
+    profile: claude
+```
+
+Conditions:
+
+- `client` recognises a client by headers it sends: `claude-code` by
+  `X-Claude-Code-Session-Id` (documented in Claude Code's LLM gateway
+  protocol), `codex` by an `Originator` header starting with `codex` (set by
+  the Codex CLI), `cline` by `X-Title: Cline` (sent to Cline's own API only).
+- `header` maps header names to RE2 patterns; an empty pattern only requires
+  the header. Clients can add one: Claude Code with `ANTHROPIC_CUSTOM_HEADERS`,
+  Codex with `http_headers` in its model provider, Cline's OpenAI Compatible
+  provider with custom headers. Headers named `X-Llmsp-*` are never forwarded.
+- `path_prefix` works with any client whose base URL can be set; the prefix is
+  removed before forwarding.
+
+The upstream base URL already holds the API path, so point Codex at the bare
+address (`http://127.0.0.1:8787`, no `/v1`); it then requests `/responses`.
+`llmsp profiles` lists the routes in matching order with each profile's rule
+count. The health endpoint answers on the routing port, and below a path
+prefix for that route's profile.
+
 Requests are masked whatever the API. Placeholders are restored in JSON
 replies of any API, and in streamed replies of Anthropic Messages, OpenAI Chat
 Completions and OpenAI Responses, including tool call arguments; streams in
