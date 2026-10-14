@@ -351,7 +351,7 @@ func relaxCmd(args []string) error {
 			return nil
 		}
 		fmt.Printf("relaxed %s until %s (%s left)\n", s.Profile, s.Until.Local().Format(time.RFC3339),
-			s.Until.Sub(now).Round(time.Minute))
+			s.Until.Sub(now).Round(time.Second))
 		return nil
 	default:
 		if e.flags.NArg() > 1 {
