@@ -3,8 +3,11 @@
 //
 //	llmsp [serve] [-config PATH] [-profile NAME] [-listen ADDR]
 //	                                              run the proxy (one listener per profile)
-//	llmsp rules list [-config PATH]               show rulesets and rules
-//	llmsp rules test [-config PATH] [FILE]        show what would be masked
+//	llmsp profiles [-config PATH]                 list the listeners and their rules
+//	llmsp rules list [-config PATH] [-profile NAME]
+//	                                              show rulesets and rules
+//	llmsp rules test [-config PATH] [-profile NAME] [FILE]
+//	                                              show what would be masked
 package main
 
 import (
@@ -20,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -47,6 +51,8 @@ func run(args []string) error {
 	switch cmd {
 	case "serve":
 		return serve(args)
+	case "profiles":
+		return profiles(args)
 	case "rules":
 		if len(args) == 0 {
 			return errors.New("usage: llmsp rules list|test")
@@ -94,16 +100,21 @@ func load(name string, args []string, extra func(*flag.FlagSet)) (*env, error) {
 	return &env{cfg: cfg, catalog: catalog, flags: fs}, nil
 }
 
-func (e *env) selection() rules.Selection {
-	return rules.Selection{Enable: e.cfg.Rulesets.Enable, Disable: e.cfg.Rulesets.Disable}
+func selection(ep config.Endpoint) rules.Selection {
+	return rules.Selection{Enable: ep.Enable, Disable: ep.Disable}
 }
 
-func (e *env) detector() (*detect.Detector, error) {
-	compiled, err := e.catalog.Compile(e.selection())
+// masking compiles an endpoint's rules and allowlist.
+func (e *env) masking(ep config.Endpoint) (*detect.Detector, []*regexp.Regexp, error) {
+	compiled, err := e.catalog.Compile(selection(ep))
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("profile %s: %w", ep.Name, err)
 	}
-	return detect.New(compiled), nil
+	allow, err := ep.AllowPatterns()
+	if err != nil {
+		return nil, nil, fmt.Errorf("profile %s: %w", ep.Name, err)
+	}
+	return detect.New(compiled), allow, nil
 }
 
 func serve(args []string) error {
@@ -117,14 +128,6 @@ func serve(args []string) error {
 	}
 	cfg := e.cfg
 	endpoints, err := cfg.Select(profile, listen)
-	if err != nil {
-		return err
-	}
-	det, err := e.detector()
-	if err != nil {
-		return err
-	}
-	allow, err := cfg.AllowPatterns()
 	if err != nil {
 		return err
 	}
@@ -143,11 +146,15 @@ func serve(args []string) error {
 		return err
 	}
 	defer st.Close()
-	// One masker and store for all profiles: a value masked for one client
-	// gets the same placeholder for another, and restoring stays scoped to
-	// the request that issued it.
-	masker := mask.New(det, st, allow)
+	// One store for all profiles: a value masked for one client gets the same
+	// placeholder for another, and restoring stays scoped to the request that
+	// issued it. A value once masked for any profile is masked by exact match
+	// in every profile, whatever its own rules. Each profile has its own rules.
 	for _, ep := range endpoints {
+		det, allow, err := e.masking(ep)
+		if err != nil {
+			return err
+		}
 		if err := checkLoopback(ep.Listen, cfg.AllowNonLoopback); err != nil {
 			return fmt.Errorf("profile %s: %w", ep.Name, err)
 		}
@@ -166,7 +173,7 @@ func serve(args []string) error {
 		srv := &proxy.Server{
 			Upstream:     upstream,
 			Client:       client,
-			Masker:       masker,
+			Masker:       mask.New(det, st, allow),
 			Resolver:     st,
 			AuthHeaders:  ep.Upstream.AuthHeaders,
 			InjectNotice: ep.InjectNotice,
@@ -192,12 +199,48 @@ func serve(args []string) error {
 	return <-errc
 }
 
-func rulesList(args []string) error {
-	e, err := load("rules list", args, nil)
+// profiles lists what serve would listen on, with the number of rules each
+// listener applies. Nothing is started.
+func profiles(args []string) error {
+	e, err := load("profiles", args, nil)
 	if err != nil {
 		return err
 	}
-	states, err := e.catalog.Resolve(e.selection())
+	endpoints, err := e.cfg.Endpoints()
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "PROFILE\tLISTEN\tRULES\tALLOWLIST")
+	for _, ep := range endpoints {
+		det, allow, err := e.masking(ep)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\n", ep.Name, ep.Listen, len(det.Rules()), len(allow))
+	}
+	return w.Flush()
+}
+
+// loadMasking loads the config and the masking settings of -profile.
+func loadMasking(name string, args []string) (*env, config.Endpoint, error) {
+	var profile string
+	e, err := load(name, args, func(fs *flag.FlagSet) {
+		fs.StringVar(&profile, "profile", "", "use this profile's rules (default: the top-level ones)")
+	})
+	if err != nil {
+		return nil, config.Endpoint{}, err
+	}
+	ep, err := e.cfg.Masking(profile)
+	return e, ep, err
+}
+
+func rulesList(args []string) error {
+	e, ep, err := loadMasking("rules list", args)
+	if err != nil {
+		return err
+	}
+	states, err := e.catalog.Resolve(selection(ep))
 	if err != nil {
 		return err
 	}
@@ -216,15 +259,11 @@ func rulesList(args []string) error {
 // rulesTest prints what the enabled rules match in a file or stdin. Nothing is
 // stored and nothing is sent anywhere.
 func rulesTest(args []string) error {
-	e, err := load("rules test", args, nil)
+	e, ep, err := loadMasking("rules test", args)
 	if err != nil {
 		return err
 	}
-	det, err := e.detector()
-	if err != nil {
-		return err
-	}
-	allow, err := e.cfg.AllowPatterns()
+	det, allow, err := e.masking(ep)
 	if err != nil {
 		return err
 	}

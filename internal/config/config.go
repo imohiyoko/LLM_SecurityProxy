@@ -37,11 +37,22 @@ type Config struct {
 	listenSet bool
 }
 
-// Profile is one listener and where its requests go.
+// Profile is one listener, where its requests go and how they are masked.
 type Profile struct {
-	Listen       string   `yaml:"listen"`
-	InjectNotice *bool    `yaml:"inject_notice"`
-	Upstream     Upstream `yaml:"upstream"`
+	Listen       string          `yaml:"listen"`
+	InjectNotice *bool           `yaml:"inject_notice"`
+	Upstream     Upstream        `yaml:"upstream"`
+	Rulesets     ProfileRulesets `yaml:"rulesets"`
+	// Allowlist is added to the top-level one.
+	Allowlist []string `yaml:"allowlist"`
+}
+
+// ProfileRulesets turns rulesets or rules on or off for one profile, over the
+// top-level selection: an ID named here overrides the same ID at the top
+// level. Ruleset files are shared, so there are no dirs here.
+type ProfileRulesets struct {
+	Enable  []string `yaml:"enable"`
+	Disable []string `yaml:"disable"`
 }
 
 // Endpoint is a resolved profile: what one listener serves.
@@ -50,6 +61,10 @@ type Endpoint struct {
 	Listen       string
 	Upstream     Upstream
 	InjectNotice bool
+	// Enable and Disable select its rules (see Rulesets); Allowlist are the
+	// patterns it never masks.
+	Enable, Disable []string
+	Allowlist       []string
 }
 
 // Upstream describes where requests go.
@@ -142,7 +157,7 @@ func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 	var out []Endpoint
 	switch {
 	case len(c.Profiles) == 0 && (profile == "" || profile == "default"):
-		out = []Endpoint{{Name: "default", Listen: c.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}}
+		out = []Endpoint{c.base("default", c.Listen)}
 	case len(c.Profiles) == 0:
 		return nil, fmt.Errorf("profile %s: the config has no profiles", profile)
 	case profile == "":
@@ -176,13 +191,31 @@ func (c *Config) Select(profile, listen string) ([]Endpoint, error) {
 	return out, nil
 }
 
+// base is an endpoint with only the top-level settings.
+func (c *Config) base(name, listen string) Endpoint {
+	return Endpoint{
+		Name: name, Listen: listen, Upstream: c.Upstream, InjectNotice: c.Notice(),
+		Enable: slices.Clone(c.Rulesets.Enable), Disable: slices.Clone(c.Rulesets.Disable),
+		Allowlist: slices.Clone(c.Allowlist),
+	}
+}
+
+// override is ids without those in drop, plus add.
+func override(ids, drop, add []string) []string {
+	out := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return slices.Contains(drop, id) })
+	return append(out, add...)
+}
+
 // Endpoints is Select("", ""): every listener.
 func (c *Config) Endpoints() ([]Endpoint, error) { return c.Select("", "") }
 
 // endpoint resolves profile name against the top-level defaults.
 func (c *Config) endpoint(name string) Endpoint {
 	p := c.Profiles[name]
-	e := Endpoint{Name: name, Listen: p.Listen, Upstream: c.Upstream, InjectNotice: c.Notice()}
+	e := c.base(name, p.Listen)
+	e.Enable = override(c.Rulesets.Enable, p.Rulesets.Disable, p.Rulesets.Enable)
+	e.Disable = override(c.Rulesets.Disable, p.Rulesets.Enable, p.Rulesets.Disable)
+	e.Allowlist = append(e.Allowlist, p.Allowlist...)
 	if u := p.Upstream; u.BaseURL != "" {
 		e.Upstream.BaseURL = u.BaseURL
 	}
@@ -213,10 +246,22 @@ func (c *Config) RuleDirs(configDir string) []string {
 	return dirs
 }
 
-// AllowPatterns compiles the allowlist.
-func (c *Config) AllowPatterns() ([]*regexp.Regexp, error) {
+// Masking returns the endpoint whose masking settings apply to profile, for
+// commands that only mask: profile empty is the top-level settings.
+func (c *Config) Masking(profile string) (Endpoint, error) {
+	if profile == "" || (profile == "default" && len(c.Profiles) == 0) {
+		return c.base("default", c.Listen), nil
+	}
+	if _, ok := c.Profiles[profile]; !ok {
+		return Endpoint{}, fmt.Errorf("profile %s: no such profile in the config", profile)
+	}
+	return c.endpoint(profile), nil
+}
+
+// AllowPatterns compiles the endpoint's allowlist.
+func (e Endpoint) AllowPatterns() ([]*regexp.Regexp, error) {
 	var out []*regexp.Regexp
-	for _, p := range c.Allowlist {
+	for _, p := range e.Allowlist {
 		re, err := regexp.Compile(p)
 		if err != nil {
 			return nil, fmt.Errorf("allowlist %q: %w", p, err)

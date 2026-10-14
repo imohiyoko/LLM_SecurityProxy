@@ -18,7 +18,9 @@ upstream:
 # Profiles: one listener per client, each with its own upstream. Point each
 # client at its own port. Unset upstream fields and inject_notice fall back to
 # the top-level ones above. With profiles, remove the top-level `listen`.
-# All profiles share one key, database and rule set.
+# All profiles share one key and database. A profile's rulesets.enable /
+# disable override the top-level ones for the IDs they name; its allowlist is
+# added to the top-level one.
 # profiles:
 #   claude:                        # ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 #     listen: 127.0.0.1:8787
@@ -31,6 +33,8 @@ upstream:
 #     listen: 127.0.0.1:8789
 #     upstream:
 #       base_url: https://llm-gateway.example.internal
+#     rulesets:
+#       enable: [builtin/network]  # mask IPv4 addresses for this client only
 
 # Where master.key and llmsp.db live. Default: the directory of this file.
 # data_dir: ~/.local/share/llmsp

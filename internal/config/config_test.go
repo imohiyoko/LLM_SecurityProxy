@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,7 @@ func TestEndpointsInvalid(t *testing.T) {
 		"same listen, other spelling": {"profiles:\n  a:\n    listen: '[::1]:9001'\n  b:\n    listen: '[0:0:0:0:0:0:0:1]:9001'\n", "both listen"},
 		"bad listen":                  {"profiles:\n  a:\n    listen: 127.0.0.1\n", "listen:"},
 		"bad name":                    {"profiles:\n  Claude Code:\n    listen: 127.0.0.1:9001\n", "name must be"},
+		"dirs in a profile":           {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n    rulesets:\n      dirs: [x]\n", "not found"},
 		"unknown field":               {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n    base_url: https://x.example.com\n", "not found"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -146,5 +148,62 @@ profiles:
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProfileMasking(t *testing.T) {
+	c, err := load(t, `
+rulesets:
+  enable: [builtin/network]
+  disable: [builtin/pii:email]
+allowlist: ['^top$']
+profiles:
+  plain:
+    listen: 127.0.0.1:9001
+  strict:
+    listen: 127.0.0.1:9002
+    rulesets:
+      enable: [builtin/pii:email]
+    allowlist: []
+  light:
+    listen: 127.0.0.1:9003
+    rulesets:
+      disable: [builtin/network, builtin/pii]
+    allowlist: ['^own$']
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eps, err := c.Endpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range eps {
+		got[e.Name] = fmt.Sprintf("enable=%v disable=%v allow=%v", e.Enable, e.Disable, e.Allowlist)
+	}
+	want := map[string]string{
+		// Nothing set: the top-level selection.
+		"plain": "enable=[builtin/network] disable=[builtin/pii:email] allow=[^top$]",
+		// Enabling what the top level disables turns it back on.
+		"strict": "enable=[builtin/network builtin/pii:email] disable=[] allow=[^top$]",
+		// Disabling what the top level enables turns it off; the allowlist adds.
+		"light": "enable=[] disable=[builtin/pii:email builtin/network builtin/pii] allow=[^top$ ^own$]",
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("%s: got %s\n want %s", name, got[name], w)
+		}
+	}
+
+	top, err := c.Masking("")
+	if err != nil || top.Name != "default" || fmt.Sprint(top.Enable) != "[builtin/network]" {
+		t.Errorf("Masking(\"\") = %+v, %v; want the top-level selection", top, err)
+	}
+	if ep, err := c.Masking("light"); err != nil || fmt.Sprint(ep.Allowlist) != "[^top$ ^own$]" {
+		t.Errorf("Masking(light) = %+v, %v", ep, err)
+	}
+	if _, err := c.Masking("nope"); err == nil {
+		t.Error("Masking(nope): want an error")
 	}
 }
