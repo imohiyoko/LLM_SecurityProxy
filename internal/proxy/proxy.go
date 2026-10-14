@@ -53,6 +53,15 @@ type Server struct {
 	unhealthy atomic.Bool // last health check failed; logged on change only
 }
 
+type logAttrsKey struct{}
+
+// WithLogAttrs adds key-value pairs to the log lines of the request handled
+// with ctx.
+func WithLogAttrs(ctx context.Context, args ...any) context.Context {
+	prev, _ := ctx.Value(logAttrsKey{}).([]any)
+	return context.WithValue(ctx, logAttrsKey{}, append(slices.Clone(prev), args...))
+}
+
 // healthTimeout bounds one health check.
 const healthTimeout = 3 * time.Second
 
@@ -72,6 +81,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log := s.Log.With("method", r.Method, "path", r.URL.Path)
+	if a, ok := r.Context().Value(logAttrsKey{}).([]any); ok {
+		log = log.With(a...)
+	}
 
 	body, stats, ids, err := s.maskRequest(r)
 	if err != nil {

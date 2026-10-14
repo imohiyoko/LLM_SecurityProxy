@@ -4,6 +4,10 @@
 //	llmsp [serve] [-config PATH] [-profile NAME] [-listen ADDR]
 //	                                              run the proxy (one listener per profile)
 //	llmsp profiles [-config PATH]                 list the listeners, routes and their rules
+//	llmsp relax [-config PATH] [-for DURATION] PROFILE
+//	                                              serve stricter profiles' requests with PROFILE for a while
+//	llmsp relax [-config PATH] -off               end it now
+//	llmsp relax [-config PATH]                    show the relaxation in effect
 //	llmsp rules list [-config PATH] [-profile NAME]
 //	                                              show rulesets and rules
 //	llmsp rules test [-config PATH] [-profile NAME] [FILE]
@@ -29,11 +33,13 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/config"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/proxy"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/relax"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/route"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
@@ -56,6 +62,8 @@ func run(args []string) error {
 		return serve(args)
 	case "profiles":
 		return profiles(args)
+	case "relax":
+		return relaxCmd(args)
 	case "rules":
 		if len(args) == 0 {
 			return errors.New("usage: llmsp rules list|test")
@@ -202,7 +210,7 @@ func serve(args []string) error {
 		}
 		var h http.Handler = fallback
 		if len(ep.Routes) > 0 {
-			rt := &route.Router{Fallback: fallback}
+			rt := &route.Router{Fallback: fallback, FallbackProfile: ep.Name, Log: log}
 			for _, r := range ep.Routes {
 				rule, err := route.Compile(r.Route)
 				if err != nil {
@@ -212,7 +220,31 @@ func serve(args []string) error {
 				if err != nil {
 					return err
 				}
-				rt.Targets = append(rt.Targets, route.Target{Rule: rule, Handler: target})
+				rt.Targets = append(rt.Targets, route.Target{Rule: rule, Profile: r.Profile, Handler: target})
+			}
+			// Profiles that may stand in for stricter ones for a while.
+			for _, name := range slices.Sorted(maps.Keys(cfg.Profiles)) {
+				x := cfg.Profiles[name].Relax
+				if x == nil {
+					continue
+				}
+				target, err := handler(cfg.Endpoint(name))
+				if err != nil {
+					return err
+				}
+				if rt.Relaxed == nil {
+					rt.Relaxed = map[string]route.Relaxed{}
+					rt.Relax = &relax.Watcher{
+						Path:  relax.Path(cfg.DataDir),
+						Limit: cfg.RelaxLimit,
+						Changed: func(_ relax.State, _ bool, err error) {
+							if err != nil {
+								log.Error("relax state unreadable; strict profiles stay in force", "err", err)
+							}
+						},
+					}
+				}
+				rt.Relaxed[name] = route.Relaxed{Replaces: x.Replaces, Handler: target}
 			}
 			h = rt
 		}
@@ -269,8 +301,80 @@ func profiles(args []string) error {
 		if err := row(ep, ep.Listen, how); err != nil {
 			return err
 		}
+		if len(ep.Routes) == 0 {
+			continue
+		}
+		for _, name := range slices.Sorted(maps.Keys(e.cfg.Profiles)) {
+			if x := e.cfg.Profiles[name].Relax; x != nil {
+				how := fmt.Sprintf("relax for %s (default %s, max %s)", strings.Join(x.Replaces, ","), x.Default, x.Max)
+				if err := row(e.cfg.Endpoint(name), ep.Listen, how); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return w.Flush()
+}
+
+// relaxCmd starts, ends or shows the temporary relaxation. The running
+// proxy picks it up within a second and ends it on time by itself.
+func relaxCmd(args []string) error {
+	var dur time.Duration
+	var off bool
+	e, err := load("relax", args, func(fs *flag.FlagSet) {
+		fs.DurationVar(&dur, "for", 0, "how long (default: the profile's relax.default)")
+		fs.BoolVar(&off, "off", false, "end the relaxation now")
+	})
+	if err != nil {
+		return err
+	}
+	cfg := e.cfg
+	path := relax.Path(cfg.DataDir)
+	now := time.Now()
+	switch name := e.flags.Arg(0); {
+	case off:
+		if name != "" || e.flags.NArg() > 1 {
+			return errors.New("relax -off takes no profile")
+		}
+		if err := relax.Clear(path); err != nil {
+			return err
+		}
+		fmt.Println("not relaxed: strict profiles in force")
+		return nil
+	case name == "":
+		s, ok, err := relax.Load(path)
+		if err != nil {
+			return err
+		}
+		if !ok || !relax.Valid(s, now, cfg.RelaxLimit) {
+			fmt.Println("not relaxed")
+			return nil
+		}
+		fmt.Printf("relaxed %s until %s (%s left)\n", s.Profile, s.Until.Local().Format(time.RFC3339),
+			s.Until.Sub(now).Round(time.Second))
+		return nil
+	default:
+		if e.flags.NArg() > 1 {
+			return errors.New("put -for before the profile: llmsp relax -for 2h PROFILE")
+		}
+		p, ok := cfg.Profiles[name]
+		if !ok || p.Relax == nil {
+			return fmt.Errorf("profile %s has no relax settings in the config", name)
+		}
+		if dur == 0 {
+			dur = p.Relax.Default
+		}
+		if dur <= 0 || dur > p.Relax.Max {
+			return fmt.Errorf("profile %s may be relaxed to for up to %s", name, p.Relax.Max)
+		}
+		s := relax.State{Profile: name, Since: now.UTC(), Until: now.Add(dur).UTC()}
+		if err := relax.Save(path, s); err != nil {
+			return err
+		}
+		fmt.Printf("relaxed %s until %s, for requests of %s\n", name, s.Until.Local().Format(time.RFC3339),
+			strings.Join(p.Relax.Replaces, ", "))
+		return nil
+	}
 }
 
 // describe is a route's conditions, for display.

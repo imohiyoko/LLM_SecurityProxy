@@ -15,11 +15,17 @@ package route
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/config"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/proxy"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/relax"
 )
 
 // HeaderPrefix marks headers meant for llmsp. They are removed from every
@@ -110,10 +116,18 @@ func (rule *Rule) Match(r *http.Request) bool {
 	return true
 }
 
-// Target is a compiled route and the handler it sends requests to.
+// Target is a compiled route and the profile it sends requests to.
 type Target struct {
 	Rule    *Rule
+	Profile string
 	Handler http.Handler
+}
+
+// Relaxed is a profile that may serve, for a while, the requests routed to
+// the profiles it Replaces.
+type Relaxed struct {
+	Replaces []string
+	Handler  http.Handler
 }
 
 // Router sends each request to the first target whose rule matches, or to
@@ -122,14 +136,31 @@ type Target struct {
 type Router struct {
 	Targets  []Target
 	Fallback http.Handler
+	// FallbackProfile names Fallback ("default").
+	FallbackProfile string
+
+	// Relax, if set, says which relaxation is in effect; Relaxed are the
+	// profiles it may name.
+	Relax   *relax.Watcher
+	Relaxed map[string]Relaxed
+	Log     *slog.Logger
+
+	mu      sync.Mutex
+	current string // relaxed profile in effect at the last request, for logging
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	next, prefix := rt.Fallback, ""
+	next, prefix, profile := rt.Fallback, "", rt.FallbackProfile
 	for _, t := range rt.Targets {
 		if t.Rule.Match(r) {
-			next, prefix = t.Handler, t.Rule.prefix
+			next, prefix, profile = t.Handler, t.Rule.prefix, t.Profile
 			break
+		}
+	}
+	if s, ok := rt.relaxed(time.Now()); ok {
+		if x := rt.Relaxed[s.Profile]; slices.Contains(x.Replaces, profile) {
+			next = x.Handler
+			r = r.WithContext(proxy.WithLogAttrs(r.Context(), "relaxed_from", profile, "relaxed_until", s.Until.Format(time.RFC3339)))
 		}
 	}
 	r = r.Clone(r.Context())
@@ -146,4 +177,27 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawPath = ""
 	}
 	next.ServeHTTP(w, r)
+}
+
+// relaxed is the relaxation in effect, logging when it starts and ends.
+func (rt *Router) relaxed(now time.Time) (relax.State, bool) {
+	if rt.Relax == nil {
+		return relax.State{}, false
+	}
+	s, ok := rt.Relax.Active(now)
+	name := ""
+	if ok {
+		name = s.Profile
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if name != rt.current && rt.Log != nil {
+		if name != "" {
+			rt.Log.Warn("relaxed: requests of stricter profiles use a looser one", "profile", name, "until", s.Until.Format(time.RFC3339))
+		} else {
+			rt.Log.Info("relaxation ended: strict profiles in force again", "profile", rt.current)
+		}
+	}
+	rt.current = name
+	return s, ok
 }

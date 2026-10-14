@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func load(t *testing.T, yaml string) (*Config, error) {
@@ -283,6 +284,13 @@ func TestRouteErrors(t *testing.T) {
 		"bad prefix":                   {profiles + "  - path_prefix: cline/\n    profile: a\n", "path_prefix"},
 		"catch-all not last":           {profiles + "  - profile: a\n  - client: codex\n    profile: a\n", "never used"},
 		"no routes, listen":            {"listen: 127.0.0.1:9000\nprofiles:\n  a:\n    listen: 127.0.0.1:9001\n", "both set"},
+		"relax without routes":         {"profiles:\n  a:\n    listen: 127.0.0.1:9001\n    relax: {replaces: [default], max: 1h}\n", "needs routes"},
+		"relax, no max":                {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{replaces: [strict]}"), "max is required"},
+		"relax, no replaces":           {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{max: 1h}"), "replaces is required"},
+		"relax, replaces itself":       {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{replaces: [loose], max: 1h}"), "no such other profile"},
+		"relax, unknown profile":       {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{replaces: [nope], max: 1h}"), "no such other profile"},
+		"relax, default over max":      {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{replaces: [strict], default: 2h, max: 1h}"), "between 0 and max"},
+		"relax, bad duration":          {fmt.Sprintf("profiles:\n  strict: {}\n  loose:\n    relax: %s\nroutes:\n  - {client: codex, profile: strict}\n", "{replaces: [strict], max: soon}"), "time.Duration"},
 		"no routes, no profile listen": {"profiles:\n  a: {}\n", "listen is required"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -291,5 +299,21 @@ func TestRouteErrors(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRelaxDefault(t *testing.T) {
+	c, err := load(t, "profiles:\n  strict: {}\n  loose:\n    relax: {replaces: [strict, default], max: 8h}\nroutes:\n  - {client: codex, profile: strict}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := c.Profiles["loose"].Relax; r.Default != 8*time.Hour {
+		t.Errorf("default omitted: got %s, want max", r.Default)
+	}
+	if max, ok := c.RelaxLimit("loose"); !ok || max != 8*time.Hour {
+		t.Errorf("RelaxLimit(loose) = %s %v", max, ok)
+	}
+	if _, ok := c.RelaxLimit("strict"); ok {
+		t.Error("strict has no relax settings")
 	}
 }
