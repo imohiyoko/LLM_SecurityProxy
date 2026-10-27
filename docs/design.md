@@ -42,7 +42,8 @@ extra CA bundle for TLS-inspecting proxies.
    headers in `upstream.auth_headers` (default `Authorization`, `X-Api-Key`)
    are forwarded unmasked; they carry the upstream credential. An unchanged
    query is forwarded byte for byte; a malformed one is rejected. The URL path
-   is forwarded as is.
+   is appended to the upstream base path as is; a path with a `.` or `..`
+   segment (also percent-encoded) is rejected, so it cannot climb out of it.
 4. Add a notice explaining placeholders: appended to the system prompt
    (Anthropic), to a leading system or developer message or as a new first
    system message (Chat Completions), or as a first developer message in
