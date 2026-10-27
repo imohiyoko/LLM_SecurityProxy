@@ -256,8 +256,10 @@ func serve(args []string) error {
 		servers = append(servers, &http.Server{
 			Handler: h,
 			// Bound how long a client may hold a connection without sending a
-			// request. No WriteTimeout: streamed responses run for minutes.
+			// request, or trickle a request body. No WriteTimeout: streamed
+			// responses run for minutes.
 			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       readTimeout,
 			IdleTimeout:       idleTimeout,
 		})
 		log.Info("llmsp listening", "addr", ep.Listen, "profile", ep.Name,
@@ -275,6 +277,7 @@ func serve(args []string) error {
 // Connection limits for the listeners started by serve.
 const (
 	readHeaderTimeout = 30 * time.Second
+	readTimeout       = 5 * time.Minute // whole request, body included; bodies are size-capped
 	idleTimeout       = 5 * time.Minute
 )
 

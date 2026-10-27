@@ -276,9 +276,9 @@ See [docs/design.md](docs/design.md). In short:
 - Placeholders are restored in tool call arguments too. A prompt injection that
   gets the model to put a placeholder from the request into a tool call that
   sends data out (a fetch, a shell command) delivers the real value there.
-- Routing picks a profile from headers and path prefixes the client sends. It is
-  a convenience, not an enforcement boundary: any process that can reach the
-  listener can choose a looser profile.
+- Routing picks a configured profile from headers and path prefixes the client
+  sends. It is a convenience, not an enforcement boundary: any process that can
+  reach the listener can choose among the profiles those routes expose.
 
 ## Contributing
 
