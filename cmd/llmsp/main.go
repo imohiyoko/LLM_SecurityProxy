@@ -253,7 +253,13 @@ func serve(args []string) error {
 			return fmt.Errorf("profile %s: %w", ep.Name, err)
 		}
 		listeners = append(listeners, ln)
-		servers = append(servers, &http.Server{Handler: h})
+		servers = append(servers, &http.Server{
+			Handler: h,
+			// Bound how long a client may hold a connection without sending a
+			// request. No WriteTimeout: streamed responses run for minutes.
+			ReadHeaderTimeout: readHeaderTimeout,
+			IdleTimeout:       idleTimeout,
+		})
 		log.Info("llmsp listening", "addr", ep.Listen, "profile", ep.Name,
 			"routes", len(ep.Routes), "data_dir", cfg.DataDir)
 	}
@@ -265,6 +271,12 @@ func serve(args []string) error {
 	}
 	return <-errc
 }
+
+// Connection limits for the listeners started by serve.
+const (
+	readHeaderTimeout = 30 * time.Second
+	idleTimeout       = 5 * time.Minute
+)
 
 // profiles lists what serve would listen on, with the number of rules each
 // listener applies. Nothing is started.
