@@ -75,6 +75,16 @@ var hopHeaders = []string{
 	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
 }
 
+// hasDotSegment reports whether the decoded path has a "." or ".." segment.
+func hasDotSegment(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == HealthPath {
 		s.health(w, r)
@@ -83,6 +93,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := s.Log.With("method", r.Method, "path", r.URL.Path)
 	if a, ok := r.Context().Value(logAttrsKey{}).([]any); ok {
 		log = log.With(a...)
+	}
+
+	// The path is appended to the upstream base path, so a "." or ".."
+	// segment (also when percent-encoded) could reach outside that path.
+	if hasDotSegment(r.URL.Path) {
+		log.Warn("request rejected", "status", http.StatusBadRequest, "reason", "dot segment in path")
+		writeError(w, http.StatusBadRequest, "llmsp: path must not contain . or .. segments")
+		return
 	}
 
 	body, stats, ids, err := s.maskRequest(r)

@@ -594,3 +594,30 @@ func TestHealthAnsweredLocally(t *testing.T) {
 		t.Errorf("failure logged %d times over 3 polls, want once:\n%s", n, f.logs.String())
 	}
 }
+
+// The request path is appended to the upstream base path, so dot segments
+// that could climb out of it are rejected, not forwarded.
+func TestRejectsDotSegments(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+		t.Error("request with dot segment forwarded upstream")
+	})
+	for _, p := range []string{"/v1/../admin", "/v1/%2e%2e/admin", "/v1/./messages", "/..", "/v1/%2E%2E"} {
+		r, err := http.NewRequest("POST", f.proxy.URL+p, strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", p, resp.StatusCode)
+		}
+	}
+	for _, p := range []string{"/v1/messages", "/v1/a..b/.x"} {
+		if hasDotSegment(p) {
+			t.Errorf("hasDotSegment(%q) = true", p)
+		}
+	}
+}
