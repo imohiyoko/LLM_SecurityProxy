@@ -273,6 +273,12 @@ See [docs/design.md](docs/design.md). In short:
   other tools that talk to the network directly are out of scope.
 - Detection is pattern-based. It reduces exposure; it does not guarantee it.
 - Anyone who can reach the listener can read restored values, so it only listens on loopback by default.
+- Placeholders are restored in tool call arguments too. A prompt injection that
+  gets the model to put a placeholder from the request into a tool call that
+  sends data out (a fetch, a shell command) delivers the real value there.
+- Routing picks a profile from headers and path prefixes the client sends. It is
+  a convenience, not an enforcement boundary: any process that can reach the
+  listener can choose a looser profile.
 
 ## Contributing
 
