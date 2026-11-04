@@ -118,7 +118,8 @@ your own. Show Clear items too, as a list to approve; the user has the last word
   user's chosen namespace, each rule with a `description`.
 - Prefer `keys:` for field names and `values_file:` for long literal lists.
   A values file is resolved next to the ruleset YAML: write it in the same
-  `rules.d/` directory, one literal per line, before running `llmsp rules test`
+  directory as the ruleset YAML (`rules.d/`, or the private repository listed
+  in `rulesets.dirs`), one literal per line, before running `llmsp rules test`
   (a missing file makes the rule fail to compile).
   Use `pattern:` only for a real shape, as narrow as it can be, with `allow:`
   for known lookalikes.
