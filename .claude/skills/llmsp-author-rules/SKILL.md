@@ -117,6 +117,9 @@ your own. Show Clear items too, as a list to approve; the user has the last word
 - One file per theme (`org-hosts.yaml`, `org-fields.yaml`), id `org/...` or the
   user's chosen namespace, each rule with a `description`.
 - Prefer `keys:` for field names and `values_file:` for long literal lists.
+  A values file is resolved next to the ruleset YAML: write it in the same
+  `rules.d/` directory, one literal per line, before running `llmsp rules test`
+  (a missing file makes the rule fail to compile).
   Use `pattern:` only for a real shape, as narrow as it can be, with `allow:`
   for known lookalikes.
 - Show the path and the file to the user before writing, then write it.
@@ -127,6 +130,10 @@ your own. Show Clear items too, as a list to approve; the user has the last word
   masked, and lines that look similar but should not.
 - Run `llmsp rules test [-profile NAME] FILE` and compare line by line: every
   expected value masked, nothing else.
+  A row whose RULE column ends with `(allowlisted)` is not masked at runtime.
+  Count it as a miss when its value is expected to be masked: show the user the
+  matching `allowlist` entry and ask whether to narrow it. Such a row for a
+  value that should not be masked is correct.
 - Report misses and false positives, fix the rule (narrow the pattern, add
   `allow:`, split the rule), and run again. Repeat until the user agrees.
 - Test the user's `config.yaml` selection, not only the new file: run it with
