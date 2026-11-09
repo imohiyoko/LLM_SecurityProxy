@@ -5,7 +5,9 @@
 # reveal what it protects (organisation names, internal hosts, ...).
 #   default:  ${XDG_CONFIG_HOME:-~/.config}/llmsp/denylist.txt
 #   override: LLMSP_DENYLIST=/path/to/file (must exist when set)
-#   The check is skipped when the default file is missing.
+#   The check is skipped when the default file is missing, except in CI
+#   (CI set to a non-empty value other than "false"), where a missing list fails:
+#   a guard that silently does nothing there would pass every change.
 # One term per line, case-insensitive, fixed strings. Lines starting with # are ignored.
 #
 # Usage:
@@ -18,7 +20,13 @@ list="${LLMSP_DENYLIST:-${XDG_CONFIG_HOME:-$HOME/.config}/llmsp/denylist.txt}"
 if [[ ! -f "$list" ]]; then
   # An explicitly named list that is missing is a mistake, not an opt-out.
   if [[ -n "${LLMSP_DENYLIST:-}" ]]; then
-    echo "denylist: LLMSP_DENYLIST=$list not found" >&2
+    # The value is not printed: it should be a path, but if the list itself
+    # was put there by mistake, echoing it would publish it in the log.
+    echo "denylist: the file named by LLMSP_DENYLIST was not found (it must be a path to the list, not the list)" >&2
+    exit 1
+  fi
+  if [[ -n "${CI:-}" && "${CI}" != "false" ]]; then
+    echo "denylist: $list not found in CI; write the list from a secret to a file and set LLMSP_DENYLIST to its path" >&2
     exit 1
   fi
   echo "denylist: $list not found; skipping (create it to enable this check)" >&2

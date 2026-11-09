@@ -621,3 +621,48 @@ func TestRejectsDotSegments(t *testing.T) {
 		}
 	}
 }
+
+// A protocol field name protects only a scalar value. An object or array under
+// one (OpenAI metadata) is free-form data and is masked throughout, even under
+// keys that are protocol fields elsewhere (id, type); the scalar protocol
+// fields beside it are kept.
+func TestProtocolFieldSubtreesMasked(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	})
+	secret := testsecret.GitHubToken()
+	body := `{"model":"m","metadata":{"id":"` + secret + `","type":"thinking","note":"` + secret + `","tags":["` + secret + `"]},
+		"messages":[{"role":"user","id":"msg-` + secret + `","content":"hi"}]}`
+	resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	raw := <-f.received
+	var sent struct {
+		Metadata map[string]any   `json:"metadata"`
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprint(sent.Metadata), secret) {
+		t.Fatalf("metadata not masked: %s", raw)
+	}
+	tags, _ := sent.Metadata["tags"].([]any)
+	for _, k := range []string{"id", "note"} {
+		if v, _ := sent.Metadata[k].(string); !placeholder.Pattern.MatchString(v) {
+			t.Fatalf("metadata.%s not replaced by a placeholder: %s", k, raw)
+		}
+	}
+	if len(tags) != 1 || !placeholder.Pattern.MatchString(fmt.Sprint(tags[0])) {
+		t.Fatalf("metadata.tags not masked in place: %s", raw)
+	}
+	if sent.Metadata["type"] != "thinking" {
+		t.Fatalf("metadata.type changed: %s", raw)
+	}
+	if sent.Messages[len(sent.Messages)-1]["id"] != "msg-"+secret {
+		t.Fatalf("scalar protocol field rewritten: %s", raw)
+	}
+}
