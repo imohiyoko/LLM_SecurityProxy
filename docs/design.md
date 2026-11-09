@@ -29,6 +29,9 @@ extra CA bundle for TLS-inspecting proxies.
      whatever its keys are called. The top-level `input` of the OpenAI
      Responses API is the conversation, not a tool argument: its protocol
      fields and reasoning items are still skipped.
+     A protocol field name protects a scalar only. An object or array under
+     one (`metadata`, which OpenAI defines as free-form key-value pairs) is
+     walked and masked like other content.
      Object keys inside tool arguments are masked too: streamed tool input is
      restored as raw JSON, keys included, and comes back as history on the
      next turn. A masked key that would collide with another key of the same

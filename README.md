@@ -276,6 +276,10 @@ See [docs/design.md](docs/design.md). In short:
 - Placeholders are restored in tool call arguments too. A prompt injection that
   gets the model to put a placeholder from the request into a tool call that
   sends data out (a fetch, a shell command) delivers the real value there.
+- `thinking` / `redacted_thinking` / `reasoning` blocks and scalar protocol
+  fields (`id`, `name`, `model`, `call_id`, base64 `data`, ...) are forwarded
+  unmasked: the API rejects edited thinking blocks, and the others are
+  identifiers, not content. A client that puts a secret there sends it as is.
 - Routing picks a configured profile from headers and path prefixes the client
   sends. It is a convenience, not an enforcement boundary: any process that can
   reach the listener can choose among the profiles those routes expose.
@@ -293,4 +297,8 @@ time (`internal/testsecret`) so the repository contains no secret-looking litera
 
 The commit hooks check staged changes and commit messages against a private
 denylist at `~/.config/llmsp/denylist.txt` (one term per line), which is never
-committed.
+committed. Without the file the check is skipped locally, but fails when `CI`
+is set: to run it in CI, provide the list from a secret through `LLMSP_DENYLIST`.
+
+CI runs `gofmt`, `go vet`, `go test -race`, gitleaks and govulncheck on every
+pull request.

@@ -13,7 +13,10 @@ import (
 
 // skipKeys hold protocol fields, not conversation content. Masking them would
 // break the request (IDs, signatures) or waste work (base64 media). They are
-// only honoured at the protocol level, never inside tool arguments.
+// only honoured at the protocol level, never inside tool arguments, and only
+// for scalar values: an object or array under one of these names (OpenAI
+// "metadata" is free-form key-value pairs, for example) is walked like any
+// other member, so a secret placed there is not forwarded in plaintext.
 var skipKeys = map[string]bool{
 	"type":              true,
 	"id":                true,
@@ -116,7 +119,7 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 			return t, nil
 		}
 		for k, e := range t {
-			if !free && skipKeys[k] && !textData(k, t) {
+			if !free && skipKeys[k] && !textData(k, t) && !container(e) {
 				continue
 			}
 			var nv any
@@ -194,6 +197,15 @@ func rekey(m map[string]any, fn func(string) (string, error), strict bool) error
 		m[mv.to] = vals[i]
 	}
 	return nil
+}
+
+// container reports whether v is a JSON object or array.
+func container(v any) bool {
+	switch v.(type) {
+	case map[string]any, []any:
+		return true
+	}
+	return false
 }
 
 // textData reports a plain-text document source ({"media_type":"text/plain",
