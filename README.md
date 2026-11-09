@@ -297,8 +297,10 @@ time (`internal/testsecret`) so the repository contains no secret-looking litera
 
 The commit hooks check staged changes and commit messages against a private
 denylist at `~/.config/llmsp/denylist.txt` (one term per line), which is never
-committed. Without the file the check is skipped locally, but fails when `CI`
-is set: to run it in CI, provide the list from a secret through `LLMSP_DENYLIST`.
+committed. Without the default file, the check is skipped unless `CI` is
+non-empty and not `false`, in which case it fails. An explicitly set
+`LLMSP_DENYLIST` must name an existing file. To run the check in CI, write the
+list from a secret to a file and set `LLMSP_DENYLIST` to that file's path.
 
 CI runs `gofmt`, `go vet`, `go test -race`, gitleaks and govulncheck on every
 pull request.

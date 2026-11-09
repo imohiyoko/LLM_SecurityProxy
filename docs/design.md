@@ -31,7 +31,8 @@ extra CA bundle for TLS-inspecting proxies.
      fields and reasoning items are still skipped.
      A protocol field name protects a scalar only. An object or array under
      one (`metadata`, which OpenAI defines as free-form key-value pairs) is
-     walked and masked like other content.
+     free-form data, like tool arguments: every value and key below it is
+     masked, whatever the keys are called.
      Object keys inside tool arguments are masked too: streamed tool input is
      restored as raw JSON, keys included, and comes back as history on the
      next turn. A masked key that would collide with another key of the same

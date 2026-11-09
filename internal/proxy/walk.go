@@ -14,9 +14,11 @@ import (
 // skipKeys hold protocol fields, not conversation content. Masking them would
 // break the request (IDs, signatures) or waste work (base64 media). They are
 // only honoured at the protocol level, never inside tool arguments, and only
-// for scalar values: an object or array under one of these names (OpenAI
-// "metadata" is free-form key-value pairs, for example) is walked like any
-// other member, so a secret placed there is not forwarded in plaintext.
+// for scalar values. An object or array under one of these names (OpenAI
+// "metadata" is free-form key-value pairs, for example) is free-form data like
+// tool arguments: everything below it is masked whatever its keys are called,
+// so a secret placed there, even under "id" or "type", is not forwarded in
+// plaintext.
 var skipKeys = map[string]bool{
 	"type":              true,
 	"id":                true,
@@ -133,7 +135,7 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 			case isStr && !free && k == "arguments" && field != nil:
 				nv, err = maskArguments(str, fn, field)
 			default:
-				nv, err = walk(e, fn, field, args, free || toolArgs(k, t), strict)
+				nv, err = walk(e, fn, field, args, free || toolArgs(k, t) || skipKeys[k], strict)
 			}
 			if err != nil {
 				return nil, err
