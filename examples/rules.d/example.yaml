@@ -41,3 +41,57 @@ rules:
     kind: MEMBER_ID
     pattern: '\bM-\d{12}\b'
     enabled: false
+
+  # Tiers: the value is still masked, but the label of the first tier it
+  # falls into is added to the kind, so the model sees the range or class
+  # (__LLMSP_SALARY_3M_6M_...__) and not the value. Tiers are tried in order.
+  #
+  # Amounts with many possible values: `below` / `at_least` (or both, for a
+  # range), written as 3000000, 300万, 3M or ¥3,000,000. A value is read as an
+  # amount with , separators, a currency sign or code, k / M / B suffixes and
+  # 千 / 万 / 億 units. A value that is not an amount (非公開) falls through to
+  # the next tier; if none takes it, it is masked with the plain kind.
+  - id: salary
+    kind: SALARY
+    keys: [salary, annual_income, base_pay, 年収, 給与]
+    tiers:
+      - {label: under_3m, below: 300万}
+      - {label: 3m_6m, below: 600万}
+      - {label: 6m_10m, below: 1000万}
+      - {label: 10m_plus, at_least: 1000万}
+    enabled: false
+
+  # Values with few possible choices: group them with `values` (exact, case
+  # and surrounding spaces ignored) or `match` (RE2). A tier with no
+  # condition takes everything else and must come last.
+  - id: disability
+    kind: DISABILITY
+    keys: [disability_grade, 障害等級]
+    tiers:
+      - {label: severe, values: [1級, 2級]}
+      - {label: moderate, match: '^[3-4]級$'}
+      - {label: other}
+    enabled: false
+
+  # Modes: how a match is masked.
+  #   restore      (default) placeholder, stored locally, restored in replies
+  #   redact       replaced by [REDACTED:<KIND>:*1234:<tag>.<mac>]; never stored or
+  #                restored. keep_first / keep_last show up to 10 letters and
+  #                digits from the ends (only when the value is more than
+  #                twice that long). For values the agent must never get back.
+  #   approximate  placeholder with the amount rounded into the kind
+  #                (__LLMSP_SALARY_ABOUT_4500K_...__), restored like restore.
+  #                digits: significant digits, default 2.
+  - id: bank_account
+    kind: BANK_ACCOUNT
+    keys: [account_number, 口座番号]
+    mode: redact
+    keep_last: 3
+    enabled: false
+
+  - id: bonus
+    kind: BONUS
+    keys: [bonus, 賞与]
+    mode: approximate
+    digits: 2
+    enabled: false

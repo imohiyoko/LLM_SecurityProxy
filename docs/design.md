@@ -140,7 +140,70 @@ value is.
   `root`, `postgres`, ...), and references to other fields (`first_name`,
   `request.user.name`, `currentUser`).
 
-### Masking a string
+#### Tiers
+
+A rule with `tiers` masks as usual, but its kind is followed by the label of
+the first tier the matched value falls into (`SALARY_3M_6M`). It is for values
+that a placeholder hides completely although their range or class is what the
+task needs: amounts with too many values to list (salaries), and values with
+few choices (a disability grade) grouped into classes.
+
+- A tier has one kind of condition: an amount range (`below`, `at_least` or
+  both), `values` (equal, ignoring case and surrounding spaces) or `match`
+  (RE2). A tier without one takes every value that reaches it and must be
+  last. The first tier that takes a value wins.
+- An amount is read from the whole value: digits with `,` or `_` group
+  separators, a decimal point, full-width digits, a currency sign or code at
+  either end, a period marker at the end (`/月`, `/year`), and either one Latin
+  suffix (`k`, `M`, `B`) or chained Japanese units (`1億2000万`, `1千万`).
+  Anything else, ranges and surrounding words included, is not an amount and
+  is taken by no amount tier; if nothing else takes it, it keeps the plain
+  kind. Bounds in the YAML use the same notation.
+- The label is `[A-Za-z0-9_]`, upper-cased, and kind plus label must fit the
+  32-character kind segment, so a placeholder never truncates it.
+- The kind is decided when a value is first stored and kept after that, like
+  every kind. The known-value pass therefore writes the same tiered
+  placeholder in free text, and a change to the tiers applies to new values
+  only. That pass skips values under 6 bytes, which few-choice values often
+  are (`2級` is 4 bytes): such a value is masked in its field and left as
+  is elsewhere unless another rule finds it.
+- Only strings are masked. A JSON number under a matching key in tool
+  arguments is passed through: masking it would turn it into a string.
+- The notice tells the model that a kind may end with a tier label it can
+  reason with.
+
+### Modes
+
+A rule's `mode` decides what replaces its matches.
+
+- `restore` (default): a placeholder; the value is stored and restored.
+- `redact`: a token `[REDACTED:<KIND>:<first>*<last>:<tag>.<mac>]`, or
+  without the kept part when the rule keeps nothing. The value is neither
+  stored nor added to the request's restore scope, so no response can bring
+  it back. The tag is the first 8 hex characters of the value's keyed ID,
+  computed and thrown away: the same value gives the same token every turn
+  (prompt caching and a consistent conversation), different values different
+  tokens. The MAC is a keyed, domain-separated HMAC over kind, kept part and
+  tag. At most 10 letters and digits are kept, and only from a value with
+  more than twice as many.
+- An incoming token is protected, so history is not masked twice, only if
+  its MAC checks out, as a placeholder is only if the store issued it. A
+  forged token is ordinary text, and a secret in its kind or kept part is
+  masked as usual.
+- A redact match wins over every other span but a protected one. A redact
+  field is masked whole rather than around the spans inside it, and a span
+  that loses to a redacted one (a known value, a wider restore match) is
+  masked in what is left of it, so a restore rule never stores the redacted
+  text and never leaves its own other end in plaintext. A redacted value
+  is not a known value: it is redacted wherever its rule finds it, and
+  missed where only the known-value pass would find it (`\n4111...` in JSON
+  source, where `\b` does not hold). Card numbers are redacted by default.
+- `approximate`: `restore`, with the amount rounded to `digits` significant
+  digits (default 2) in the kind: `SALARY_ABOUT_4500K`. Load-time checks keep
+  room for the figure in the 32-character kind; a figure that still does not
+  fit, or a value that is not an amount, gets the plain kind.
+
+## Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value
    already in the store (exact match, minimum length 6, not inside a longer

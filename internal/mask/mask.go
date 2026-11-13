@@ -71,6 +71,9 @@ type span struct {
 	keep       bool // existing placeholder: protect, do not mask
 	field      bool // whole value of a field: lowest priority, see mask
 	escapes    bool // field value read from text: split at backslash escapes
+	// redact: replace by a redaction token, never store (detect.ModeRedact)
+	redact              bool
+	keepFirst, keepLast int
 }
 
 // String masks s, adds what it masked to stats and the placeholder IDs it
@@ -183,11 +186,26 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET"})
 		}
 	}
+	// A redaction token from an earlier turn is kept as it is: it holds
+	// nothing to restore, and masking it again would nest tokens. Only a
+	// token this store wrote is kept: its MAC covers the kind, the kept
+	// characters and the value tag. Anything else of that shape is ordinary
+	// text, and a secret in its kind or kept part is masked as usual.
+	for _, sub := range placeholder.RedactedPattern.FindAllStringSubmatchIndex(s, -1) {
+		kind, kept := s[sub[2]:sub[3]], ""
+		if sub[4] >= 0 {
+			kept = s[sub[4]:sub[5]]
+		}
+		tag, mac := s[sub[6]:sub[7]], s[sub[8]:sub[9]]
+		if len(kept)-1 <= placeholder.MaxKept && mac == m.store.RedactMAC(kind, kept, tag) {
+			spans = append(spans, span{start: sub[0], end: sub[1], keep: true})
+		}
+	}
 	for _, d := range m.det.Find(s) {
-		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: d.Field})
+		spans = append(spans, fromMatch(d, d.Field))
 	}
 	for _, d := range extra {
-		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind, field: d.Field})
+		spans = append(spans, fromMatch(d, false))
 	}
 	// Values seen before, e.g. a secret the model wrote back into code after
 	// we unmasked it, which no longer has the context a detector needs. A
@@ -231,7 +249,10 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	for _, sp := range spans {
 		switch {
 		case !sp.keep && m.allowed(s[sp.start:sp.end]):
-		case sp.field:
+		// A field value to redact is not split around other spans like a
+		// field value to restore: redacting it whole hides whatever it
+		// contains and stores none of it.
+		case sp.field && !sp.redact:
 			fields = append(fields, sp)
 		default:
 			kept = append(kept, sp)
@@ -242,21 +263,40 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		return s, nil
 	}
 
-	// Protected spans win, then earlier, then longer.
+	// Protected spans win, then redacted ones, then earlier, then longer.
 	sort.Slice(spans, func(i, j int) bool {
 		a, b := spans[i], spans[j]
 		if a.keep != b.keep {
 			return a.keep
 		}
+		if a.redact != b.redact {
+			return a.redact
+		}
 		if a.start != b.start {
 			return a.start < b.start
 		}
-		return a.end-a.start > b.end-b.start
+		if a.end-a.start != b.end-b.start {
+			return a.end-a.start > b.end-b.start
+		}
+		return false
 	})
 	var chosen []span
 	for _, sp := range spans {
 		if !overlapsAny(sp, chosen) {
 			chosen = append(chosen, sp)
+			continue
+		}
+		// A redacted span that overlaps another chosen one, and a span that
+		// loses to a redacted one (a known value, or a restore rule matching
+		// more than the redacted text), are masked in what is left of them,
+		// so their other end is not sent in plaintext. The pieces keep the
+		// span's mode: a redacted remainder is redacted, not stored.
+		if !sp.keep && (sp.redact || overlapsRedacted(sp, chosen)) {
+			for _, p := range pieces(s, sp, chosen) {
+				if !overlapsAny(p, chosen) && !m.allowed(s[p.start:p.end]) {
+					chosen = append(chosen, p)
+				}
+			}
 		}
 	}
 	// A field value is masked last, in what the other spans leave of it: it
@@ -277,7 +317,8 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		}
 		// A value read from text holds its escapes (Jane \"JD\" Doe); store
 		// it unescaped too, so the known-value pass finds it in decoded text.
-		if v := s[f.start:f.end]; f.escapes && strings.ContainsRune(v, '\\') {
+		// Not when part of it was redacted: that part must not be stored.
+		if v := s[f.start:f.end]; f.escapes && !f.redact && !overlapsRedacted(f, chosen) && strings.ContainsRune(v, '\\') {
 			if u := unescape(v); len(u) >= MinKnownLen {
 				if _, _, err := m.store.Put(f.kind, u); err != nil {
 					return "", err
@@ -292,6 +333,14 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	last := 0
 	for _, sp := range chosen {
 		if sp.keep {
+			continue
+		}
+		if sp.redact {
+			v := s[sp.start:sp.end]
+			b.WriteString(s[last:sp.start])
+			b.WriteString(m.redacted(sp, v))
+			last = sp.end
+			stats[placeholder.NormalizeKind(sp.kind)]++
 			continue
 		}
 		id, kind, err := m.store.Put(sp.kind, s[sp.start:sp.end])
@@ -355,7 +404,8 @@ func overlapsAny(sp span, chosen []span) bool {
 
 // pieces returns what is left of the field span f once the chosen spans are
 // cut out of it, split at backslash escapes if f was read from text, and
-// trimmed of spaces. Pieces without a letter or digit are dropped.
+// trimmed of spaces. Pieces without a letter or digit are dropped, unless
+// f is redacted.
 func pieces(s string, f span, chosen []span) []span {
 	var out []span
 	add := func(start, end int) {
@@ -365,8 +415,12 @@ func pieces(s string, f span, chosen []span) []span {
 		for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
 			end--
 		}
-		if strings.IndexFunc(s[start:end], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
-			out = append(out, span{start: start, end: end, kind: f.kind})
+		// A piece of a redacted value is hidden whatever it holds: a
+		// remainder of symbols is still part of the value.
+		if start < end && (f.redact || strings.IndexFunc(s[start:end], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0) {
+			p := f
+			p.start, p.end, p.field, p.escapes = start, end, false, false
+			out = append(out, p)
 		}
 	}
 	start := f.start
@@ -377,7 +431,9 @@ func pieces(s string, f span, chosen []span) []span {
 			start = i
 			continue
 		}
-		if f.escapes && s[i] == '\\' && i+1 < f.end {
+		// Escapes split a value to restore, so each piece restores anywhere.
+		// A redacted value is not restored: its escapes stay in its pieces.
+		if f.escapes && !f.redact && s[i] == '\\' && i+1 < f.end {
 			add(start, i)
 			_, w := utf8.DecodeRuneInString(s[i+1:])
 			i += 1 + w
@@ -440,4 +496,46 @@ func jsonEscaped(v string) string {
 	enc.Encode(v)
 	b := bytes.TrimRight(buf.Bytes(), "\n")
 	return string(b[1 : len(b)-1])
+}
+
+func fromMatch(d detect.Match, escapes bool) span {
+	return span{
+		start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: escapes,
+		redact: d.Redact, keepFirst: d.KeepFirst, keepLast: d.KeepLast,
+	}
+}
+
+// redacted returns the redaction token for v. The tag is the start of the
+// value's keyed ID, computed but not stored, so the same value gets the same
+// token every turn and different values different ones. The kept characters
+// are letters and digits from each end, and only when the value has more
+// than twice as many: a short value shows nothing.
+func (m *Masker) redacted(sp span, v string) string {
+	var alnum []byte
+	for i := 0; i < len(v); i++ {
+		if isWord(v[i]) {
+			alnum = append(alnum, v[i])
+		}
+	}
+	first, last := "", ""
+	if keep := sp.keepFirst + sp.keepLast; keep > 0 && len(alnum) > 2*keep {
+		first = string(alnum[:sp.keepFirst])
+		last = string(alnum[len(alnum)-sp.keepLast:])
+	}
+	kind := placeholder.NormalizeKind(sp.kind)
+	tag := m.store.ID(v)[:placeholder.RedactedTagLen]
+	kept := ""
+	if first != "" || last != "" {
+		kept = first + "*" + last
+	}
+	return placeholder.FormatRedacted(kind, kept, tag, m.store.RedactMAC(kind, kept, tag))
+}
+
+func overlapsRedacted(sp span, chosen []span) bool {
+	for _, c := range chosen {
+		if c.redact && sp.start < c.end && c.start < sp.end {
+			return true
+		}
+	}
+	return false
 }

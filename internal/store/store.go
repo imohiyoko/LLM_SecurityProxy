@@ -248,6 +248,16 @@ func (s *Store) ID(value string) string {
 	return hex.EncodeToString(m.Sum(nil))[:placeholder.IDLen]
 }
 
+// RedactMAC authenticates a redaction token's visible parts (see
+// placeholder.FormatRedacted), so that only tokens this store's key wrote
+// are protected from masking. It is keyed like ID but domain-separated, so it
+// never equals the ID of a value.
+func (s *Store) RedactMAC(kind, kept, tag string) string {
+	m := hmac.New(sha256.New, s.mac)
+	m.Write([]byte("llmsp redact\x00" + kind + "\x00" + kept + "\x00" + tag))
+	return hex.EncodeToString(m.Sum(nil))[:placeholder.RedactedTagLen]
+}
+
 // Put records value and returns its ID and the kind it was first stored under.
 func (s *Store) Put(kind, value string) (id, storedKind string, err error) {
 	id = s.ID(value)

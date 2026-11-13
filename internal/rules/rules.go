@@ -22,6 +22,7 @@ import (
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/field"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 )
 
 //go:embed builtin/*.yaml
@@ -72,8 +73,47 @@ type Spec struct {
 	Allow []string `yaml:"allow"`
 	// Validators are named checks the value must pass (see Validators).
 	Validators []string `yaml:"validators"`
+	// Tiers split the masked values into levels: the label of the first
+	// tier a value falls into is added to the kind (SALARY_3M_6M), so the
+	// model sees the range or class of a value but not the value.
+	Tiers []TierSpec `yaml:"tiers"`
+	// Mode is how a match is masked: restore (the default), redact or
+	// approximate. See detect.Mode.
+	Mode string `yaml:"mode"`
+	// KeepFirst and KeepLast are the letters and digits a redacted value
+	// shows from each end (keep_last: 4 for the last four of a card).
+	KeepFirst int `yaml:"keep_first"`
+	KeepLast  int `yaml:"keep_last"`
+	// Digits is the number of significant digits mode approximate keeps.
+	// Omitted means 2.
+	Digits int `yaml:"digits"`
 	// Enabled omitted means true.
 	Enabled *bool `yaml:"enabled"`
+}
+
+// MaxKeep bounds keep_first + keep_last: a redacted value never shows more
+// than this many of its characters.
+const MaxKeep = 10
+
+// TierSpec is one level of a tiered rule, as written in YAML. Tiers are tried
+// in order and the first that takes a value wins. A tier sets one of: an
+// amount range (Below, AtLeast or both), Values, or Match. A tier with none
+// takes every value that reached it, amounts or not, and must be the last.
+type TierSpec struct {
+	// Label is added to the kind after an underscore: letters, digits, _.
+	Label string `yaml:"label"`
+	// Below takes values whose amount is less than it. It is written as a
+	// number (3000000) or as an amount in the same notation values use
+	// ("300万", "3M", "¥3,000,000").
+	Below string `yaml:"below"`
+	// AtLeast takes values whose amount is at least it, in the same
+	// notation as Below. With Below, the tier is the range between them.
+	AtLeast string `yaml:"at_least"`
+	// Values takes values equal to one of these, ignoring case and
+	// surrounding spaces.
+	Values []string `yaml:"values"`
+	// Match takes values matching this RE2 pattern.
+	Match string `yaml:"match"`
 }
 
 // Selection says which rulesets and rules are on. Entries are ruleset IDs
@@ -371,6 +411,14 @@ func compile(rs *Ruleset, s *Spec) (detect.Rule, error) {
 		}
 		r.Allow = append(r.Allow, re)
 	}
+	tiers, err := compileTiers(r.Kind, s.Tiers)
+	if err != nil {
+		return fail("%v", err)
+	}
+	r.Tiers = tiers
+	if err := compileMode(&r, s); err != nil {
+		return fail("%v", err)
+	}
 	for _, name := range s.Validators {
 		v, ok := Validators[name]
 		if !ok {
@@ -425,4 +473,112 @@ func resolvePath(dir, p string) string {
 		return p
 	}
 	return filepath.Join(dir, p)
+}
+
+var tierLabelPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+func compileTiers(kind string, specs []TierSpec) ([]detect.Tier, error) {
+	var out []detect.Tier
+	labels := map[string]bool{}
+	base := placeholder.NormalizeKind(kind)
+	for i, t := range specs {
+		where := fmt.Sprintf("tiers[%d]", i)
+		if !tierLabelPattern.MatchString(t.Label) {
+			return nil, fmt.Errorf("%s: label %q must be letters, digits and _", where, t.Label)
+		}
+		full := base + "_" + strings.ToUpper(t.Label)
+		if norm := placeholder.NormalizeKind(full); norm != full {
+			return nil, fmt.Errorf("%s: kind and label %q are longer than %d characters together", where, full, placeholder.MaxKindLen)
+		}
+		if labels[full] {
+			return nil, fmt.Errorf("%s: duplicate label %q", where, t.Label)
+		}
+		labels[full] = true
+		if i > 0 && out[i-1].Match == nil && !out[i-1].HasBelow && !out[i-1].HasAtLeast && len(out[i-1].Values) == 0 {
+			return nil, fmt.Errorf("tiers[%d] takes every value, so it must be the last tier", i-1)
+		}
+
+		tier := detect.Tier{Label: strings.ToUpper(t.Label)}
+		set := 0
+		if t.Below != "" || t.AtLeast != "" {
+			set++
+			for _, b := range []struct {
+				name, text string
+				n          *float64
+				has        *bool
+			}{{"below", t.Below, &tier.Below, &tier.HasBelow}, {"at_least", t.AtLeast, &tier.AtLeast, &tier.HasAtLeast}} {
+				if b.text == "" {
+					continue
+				}
+				n, ok := detect.ParseNumber(b.text)
+				if !ok {
+					return nil, fmt.Errorf("%s: %s %q is not an amount", where, b.name, b.text)
+				}
+				*b.n, *b.has = n, true
+			}
+			if tier.HasBelow && tier.HasAtLeast && tier.AtLeast >= tier.Below {
+				return nil, fmt.Errorf("%s: at_least must be less than below", where)
+			}
+		}
+		if len(t.Values) > 0 {
+			set++
+			tier.Values = t.Values
+		}
+		if t.Match != "" {
+			set++
+			re, err := regexp.Compile(t.Match)
+			if err != nil {
+				return nil, fmt.Errorf("%s: match: %v", where, err)
+			}
+			tier.Match = re
+		}
+		if set > 1 {
+			return nil, fmt.Errorf("%s: set only one of below / at_least, values or match", where)
+		}
+		out = append(out, tier)
+	}
+	return out, nil
+}
+
+func compileMode(r *detect.Rule, s *Spec) error {
+	switch s.Mode {
+	case "", "restore":
+		r.Mode = detect.ModeRestore
+	case "redact":
+		r.Mode = detect.ModeRedact
+	case "approximate":
+		r.Mode = detect.ModeApproximate
+	default:
+		return fmt.Errorf("unknown mode %q (restore, redact, approximate)", s.Mode)
+	}
+	if s.KeepFirst < 0 || s.KeepLast < 0 {
+		return errors.New("keep_first and keep_last must not be negative")
+	}
+	if (s.KeepFirst > 0 || s.KeepLast > 0) && r.Mode != detect.ModeRedact {
+		return errors.New("keep_first and keep_last are only valid with mode: redact")
+	}
+	if s.KeepFirst+s.KeepLast > MaxKeep {
+		return fmt.Errorf("keep_first + keep_last must be at most %d", MaxKeep)
+	}
+	r.KeepFirst, r.KeepLast = s.KeepFirst, s.KeepLast
+	if s.Digits != 0 && r.Mode != detect.ModeApproximate {
+		return errors.New("digits is only valid with mode: approximate")
+	}
+	if r.Mode == detect.ModeApproximate {
+		if len(s.Tiers) > 0 {
+			return errors.New("set at most one of tiers or mode: approximate")
+		}
+		r.ApproxDigits = s.Digits
+		if r.ApproxDigits == 0 {
+			r.ApproxDigits = 2
+		}
+		if r.ApproxDigits < 1 || r.ApproxDigits > 6 {
+			return errors.New("digits must be between 1 and 6")
+		}
+		// Room for _ABOUT_ and a figure such as MINUS4500K.
+		if len(placeholder.NormalizeKind(r.Kind))+len("_ABOUT_")+r.ApproxDigits+8 > placeholder.MaxKindLen {
+			return fmt.Errorf("kind %q is too long for mode: approximate", r.Kind)
+		}
+	}
+	return nil
 }
