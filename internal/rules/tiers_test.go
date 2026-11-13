@@ -146,3 +146,22 @@ func TestModeErrors(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestLinkErrors(t *testing.T) {
+	for name, extra := range map[string]string{
+		"restore": "{link: context}",
+		"unknown": "{mode: redact, link: row}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "x.yaml", "id: x\nrules:\n  - "+strings.TrimSuffix(extra, "}")+", id: r, kind: K, keys: [k]}\n")
+			c, err := Load([]string{dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Compile(Selection{}); err == nil || !strings.Contains(err.Error(), "link") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
+}

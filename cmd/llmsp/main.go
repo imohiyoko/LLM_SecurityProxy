@@ -454,6 +454,9 @@ func rulesList(args []string) error {
 		if s.Spec.KeepFirst > 0 || s.Spec.KeepLast > 0 {
 			mode += fmt.Sprintf("(%d+%d)", s.Spec.KeepFirst, s.Spec.KeepLast)
 		}
+		if s.Spec.Link == "context" {
+			mode += ",context"
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", state, rules.FullID(s.Set.ID, s.Spec.ID), kind, mode, s.Set.Source)
 	}
 	return w.Flush()

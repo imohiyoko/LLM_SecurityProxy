@@ -279,3 +279,51 @@ rules:
 		t.Errorf("restored %q", back)
 	}
 }
+
+// link: context gives the same value in two records two tokens, and the
+// same record the same token on every turn.
+func TestRedactUnlinkable(t *testing.T) {
+	const rules = `
+id: org/hr
+rules:
+  - id: grade
+    kind: DISABILITY
+    keys: [disability_grade]
+    mode: redact
+    link: %s
+`
+	tags := func(link string) (a, b, again string) {
+		m, st := maskerWith(t, strings.Replace(rules, "%s", link, 1))
+		in := "name_id: 1\ndisability_grade: 2級\nname_id: 2\ndisability_grade: 2級\n"
+		out, err := m.String(in, Stats{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, _ = m.String(in, Stats{}, nil)
+		if known, _ := st.Known(); len(known) != 0 {
+			t.Errorf("stored %v", known)
+		}
+		got := regexp.MustCompile(`\[REDACTED:DISABILITY:[0-9a-f.]+\]`).FindAllString(out, -1)
+		if len(got) != 2 {
+			t.Fatalf("%s: out = %q", link, out)
+		}
+		return got[0], got[1], again
+	}
+	a, b, _ := tags("value")
+	if a != b {
+		t.Errorf("link: value gave two tokens for one value: %s %s", a, b)
+	}
+	a, b, again := tags("context")
+	if a == b {
+		t.Errorf("link: context gave one token for two records: %s", a)
+	}
+	if !strings.Contains(again, a) || !strings.Contains(again, b) {
+		t.Errorf("link: context not stable across turns: %q", again)
+	}
+	// The tokens are still the proxy's own: resent, they are kept.
+	m, _ := maskerWith(t, strings.Replace(rules, "%s", "context", 1))
+	out, _ := m.String("disability_grade: 2級\n", Stats{}, nil)
+	if back, _ := m.String(out, Stats{}, nil); back != out {
+		t.Errorf("token re-masked: %q -> %q", out, back)
+	}
+}

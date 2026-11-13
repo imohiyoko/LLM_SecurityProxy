@@ -186,6 +186,13 @@ A rule's `mode` decides what replaces its matches.
   tokens. The MAC is a keyed, domain-separated HMAC over kind, kept part and
   tag. At most 10 letters and digits are kept, and only from a value with
   more than twice as many.
+- `link: context` (redact only) derives the tag from the value, its offset
+  and the whole string it was found in, under a separate domain prefix. The
+  same value elsewhere gets another tag, so equal tags no longer show which
+  records share a value with few possible choices; a string resent byte for
+  byte keeps its tags, so caching and the conversation are unaffected. A
+  value matched from structure (a JSON member by key) has no surrounding
+  string and falls back to the value alone.
 - An incoming token is protected, so history is not masked twice, only if
   its MAC checks out, as a placeholder is only if the store issued it. A
   forged token is ordinary text, and a secret in its kind or kept part is

@@ -89,6 +89,15 @@ rules:
     keep_last: 3
     enabled: false
 
+  # Few-choice sensitive values: link: context gives the same value in two
+  # records two different tokens, so equal tokens do not show who shares it.
+  - id: health_flag
+    kind: SENSITIVE
+    keys: [disability_grade, 障害等級, health_condition]
+    mode: redact
+    link: context
+    enabled: false
+
   - id: bonus
     kind: BONUS
     keys: [bonus, 賞与]
