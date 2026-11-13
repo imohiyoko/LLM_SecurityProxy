@@ -168,6 +168,33 @@ rules:
 	}
 }
 
+// Two redact matches that overlap in part: the loser's remainder is
+// redacted too, not sent in plaintext.
+func TestRedactOverlap(t *testing.T) {
+	m, st := maskerWith(t, `
+id: org/hr
+rules:
+  - id: my_number
+    kind: MY_NUMBER
+    keys: [my_number]
+    mode: redact
+  - id: prefix
+    kind: PREFIX
+    pattern: 'my_number: \d{4}'
+    mode: redact
+`)
+	got, err := m.String("my_number: 123456789012\n", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "5678") || strings.Count(got, "[REDACTED:") != 2 {
+		t.Errorf("got %q", got)
+	}
+	if known, _ := st.Known(); len(known) != 0 {
+		t.Errorf("stored %v", known)
+	}
+}
+
 // A restore span that runs past a redacted one is masked in what is left.
 func TestRestoreAroundRedact(t *testing.T) {
 	m, _ := maskerWith(t, `

@@ -286,10 +286,12 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 			chosen = append(chosen, sp)
 			continue
 		}
-		// A span that loses to a redacted one (a known value, or a restore
-		// rule matching more than the redacted text) is masked in what is
-		// left of it, so its other end is not sent in plaintext.
-		if !sp.keep && !sp.redact && overlapsRedacted(sp, chosen) {
+		// A redacted span that overlaps another chosen one, and a span that
+		// loses to a redacted one (a known value, or a restore rule matching
+		// more than the redacted text), are masked in what is left of them,
+		// so their other end is not sent in plaintext. The pieces keep the
+		// span's mode: a redacted remainder is redacted, not stored.
+		if !sp.keep && (sp.redact || overlapsRedacted(sp, chosen)) {
 			for _, p := range pieces(s, sp, chosen) {
 				if !overlapsAny(p, chosen) && !m.allowed(s[p.start:p.end]) {
 					chosen = append(chosen, p)
