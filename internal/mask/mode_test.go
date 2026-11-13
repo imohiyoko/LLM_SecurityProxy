@@ -180,7 +180,7 @@ rules:
     mode: redact
   - id: prefix
     kind: PREFIX
-    pattern: 'my_number: \d{4}'
+    pattern: 'my_number: "?\d{4}'
     mode: redact
 `)
 	got, err := m.String("my_number: 123456789012\n", Stats{}, nil)
@@ -192,6 +192,11 @@ rules:
 	}
 	if known, _ := st.Known(); len(known) != 0 {
 		t.Errorf("stored %v", known)
+	}
+	// A remainder of symbols only is redacted too.
+	got, _ = m.String(`my_number: "1234!@#$"`, Stats{}, nil)
+	if strings.Contains(got, "!@#$") {
+		t.Errorf("symbols left: %q", got)
 	}
 }
 

@@ -403,7 +403,8 @@ func overlapsAny(sp span, chosen []span) bool {
 
 // pieces returns what is left of the field span f once the chosen spans are
 // cut out of it, split at backslash escapes if f was read from text, and
-// trimmed of spaces. Pieces without a letter or digit are dropped.
+// trimmed of spaces. Pieces without a letter or digit are dropped, unless
+// f is redacted.
 func pieces(s string, f span, chosen []span) []span {
 	var out []span
 	add := func(start, end int) {
@@ -413,7 +414,9 @@ func pieces(s string, f span, chosen []span) []span {
 		for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
 			end--
 		}
-		if strings.IndexFunc(s[start:end], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
+		// A piece of a redacted value is hidden whatever it holds: a
+		// remainder of symbols is still part of the value.
+		if start < end && (f.redact || strings.IndexFunc(s[start:end], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0) {
 			p := f
 			p.start, p.end, p.field, p.escapes = start, end, false, false
 			out = append(out, p)
