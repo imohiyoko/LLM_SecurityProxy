@@ -21,6 +21,11 @@ rules:
     # be masked at all. luhn checks the length and the checksum.
     pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011|65\d{2}|30[0-5]\d|3[689]\d{2})(?:\d{9,15}|(?:[ -]\d{4}){2}[ -]\d{1,7}|[ -]\d{6}[ -]\d{3,9})\b'
     validators: [luhn]
+    # Card numbers are removed, not stored: the model sees
+    # [REDACTED:CREDIT_CARD:*1234:<tag>] and the number never comes back.
+    # Set mode: restore in your own copy of this ruleset to keep them.
+    mode: redact
+    keep_last: 4
 
   - id: credit_card_19
     kind: CREDIT_CARD
@@ -30,6 +35,8 @@ rules:
     # its own and the longer valid match wins.
     pattern: '\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|35\d{2}|6011|65\d{2})(?:[ -]\d{4}){3}[ -]\d{3}\b'
     validators: [luhn]
+    mode: redact
+    keep_last: 4
 
   - id: name
     kind: NAME

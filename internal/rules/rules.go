@@ -77,9 +77,23 @@ type Spec struct {
 	// tier a value falls into is added to the kind (SALARY_3M_6M), so the
 	// model sees the range or class of a value but not the value.
 	Tiers []TierSpec `yaml:"tiers"`
+	// Mode is how a match is masked: restore (the default), redact or
+	// approximate. See detect.Mode.
+	Mode string `yaml:"mode"`
+	// KeepFirst and KeepLast are the letters and digits a redacted value
+	// shows from each end (keep_last: 4 for the last four of a card).
+	KeepFirst int `yaml:"keep_first"`
+	KeepLast  int `yaml:"keep_last"`
+	// Digits is the number of significant digits mode approximate keeps.
+	// Omitted means 2.
+	Digits int `yaml:"digits"`
 	// Enabled omitted means true.
 	Enabled *bool `yaml:"enabled"`
 }
+
+// MaxKeep bounds keep_first + keep_last: a redacted value never shows more
+// than this many of its characters.
+const MaxKeep = 10
 
 // TierSpec is one level of a tiered rule, as written in YAML. Tiers are tried
 // in order and the first that takes a value wins. A tier sets one of: an
@@ -402,6 +416,9 @@ func compile(rs *Ruleset, s *Spec) (detect.Rule, error) {
 		return fail("%v", err)
 	}
 	r.Tiers = tiers
+	if err := compileMode(&r, s); err != nil {
+		return fail("%v", err)
+	}
 	for _, name := range s.Validators {
 		v, ok := Validators[name]
 		if !ok {
@@ -521,4 +538,47 @@ func compileTiers(kind string, specs []TierSpec) ([]detect.Tier, error) {
 		out = append(out, tier)
 	}
 	return out, nil
+}
+
+func compileMode(r *detect.Rule, s *Spec) error {
+	switch s.Mode {
+	case "", "restore":
+		r.Mode = detect.ModeRestore
+	case "redact":
+		r.Mode = detect.ModeRedact
+	case "approximate":
+		r.Mode = detect.ModeApproximate
+	default:
+		return fmt.Errorf("unknown mode %q (restore, redact, approximate)", s.Mode)
+	}
+	if s.KeepFirst < 0 || s.KeepLast < 0 {
+		return errors.New("keep_first and keep_last must not be negative")
+	}
+	if (s.KeepFirst > 0 || s.KeepLast > 0) && r.Mode != detect.ModeRedact {
+		return errors.New("keep_first and keep_last are only valid with mode: redact")
+	}
+	if s.KeepFirst+s.KeepLast > MaxKeep {
+		return fmt.Errorf("keep_first + keep_last must be at most %d", MaxKeep)
+	}
+	r.KeepFirst, r.KeepLast = s.KeepFirst, s.KeepLast
+	if s.Digits != 0 && r.Mode != detect.ModeApproximate {
+		return errors.New("digits is only valid with mode: approximate")
+	}
+	if r.Mode == detect.ModeApproximate {
+		if len(s.Tiers) > 0 {
+			return errors.New("set at most one of tiers or mode: approximate")
+		}
+		r.ApproxDigits = s.Digits
+		if r.ApproxDigits == 0 {
+			r.ApproxDigits = 2
+		}
+		if r.ApproxDigits < 1 || r.ApproxDigits > 6 {
+			return errors.New("digits must be between 1 and 6")
+		}
+		// Room for _ABOUT_ and a figure such as MINUS4500K.
+		if len(placeholder.NormalizeKind(r.Kind))+len("_ABOUT_")+r.ApproxDigits+8 > placeholder.MaxKindLen {
+			return fmt.Errorf("kind %q is too long for mode: approximate", r.Kind)
+		}
+	}
+	return nil
 }

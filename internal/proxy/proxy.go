@@ -32,7 +32,9 @@ const Notice = "Some sensitive values in this conversation were replaced by a lo
 	"the placeholder exactly as it appears, character for character; the proxy restores the real value " +
 	"locally. Do not guess, alter, split, re-case, encode or ask for the real values. " +
 	"A kind may end with a tier label that gives the range or class of the hidden value " +
-	"(SALARY_3M_6M: an amount from 3M up to 6M); you may reason with that label, but it is not the value."
+	"(SALARY_3M_6M: an amount from 3M up to 6M; SALARY_ABOUT_4500K: about 4,500,000); you may reason with " +
+	"that label, but it is not the value. Values shown as [REDACTED:<KIND>:...] were removed for good and are " +
+	"never restored; the characters around a * are the only part kept. Do not use such a token as the value."
 
 // Server is an http.Handler.
 type Server struct {

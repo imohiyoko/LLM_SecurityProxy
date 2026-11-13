@@ -71,6 +71,9 @@ type span struct {
 	keep       bool // existing placeholder: protect, do not mask
 	field      bool // whole value of a field: lowest priority, see mask
 	escapes    bool // field value read from text: split at backslash escapes
+	// redact: replace by a redaction token, never store (detect.ModeRedact)
+	redact              bool
+	keepFirst, keepLast int
 }
 
 // String masks s, adds what it masked to stats and the placeholder IDs it
@@ -183,11 +186,19 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET"})
 		}
 	}
+	// A redaction token from an earlier turn is kept as it is: it holds
+	// nothing to restore, and masking it again would nest tokens. Its kept
+	// part is short (placeholder.MaxKept), so it cannot carry a whole secret.
+	for _, sub := range placeholder.RedactedPattern.FindAllStringSubmatchIndex(s, -1) {
+		if sub[4] < 0 || sub[5]-sub[4]-1 <= placeholder.MaxKept {
+			spans = append(spans, span{start: sub[0], end: sub[1], keep: true})
+		}
+	}
 	for _, d := range m.det.Find(s) {
-		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: d.Field})
+		spans = append(spans, fromMatch(d, d.Field))
 	}
 	for _, d := range extra {
-		spans = append(spans, span{start: d.Start, end: d.End, kind: d.Kind, field: d.Field})
+		spans = append(spans, fromMatch(d, false))
 	}
 	// Values seen before, e.g. a secret the model wrote back into code after
 	// we unmasked it, which no longer has the context a detector needs. A
@@ -251,7 +262,12 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		if a.start != b.start {
 			return a.start < b.start
 		}
-		return a.end-a.start > b.end-b.start
+		if a.end-a.start != b.end-b.start {
+			return a.end-a.start > b.end-b.start
+		}
+		// The same text found by a redact rule and as a known value (stored
+		// before the rule was set to redact) is redacted.
+		return a.redact && !b.redact
 	})
 	var chosen []span
 	for _, sp := range spans {
@@ -277,7 +293,7 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		}
 		// A value read from text holds its escapes (Jane \"JD\" Doe); store
 		// it unescaped too, so the known-value pass finds it in decoded text.
-		if v := s[f.start:f.end]; f.escapes && strings.ContainsRune(v, '\\') {
+		if v := s[f.start:f.end]; f.escapes && !f.redact && strings.ContainsRune(v, '\\') {
 			if u := unescape(v); len(u) >= MinKnownLen {
 				if _, _, err := m.store.Put(f.kind, u); err != nil {
 					return "", err
@@ -292,6 +308,14 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	last := 0
 	for _, sp := range chosen {
 		if sp.keep {
+			continue
+		}
+		if sp.redact {
+			v := s[sp.start:sp.end]
+			b.WriteString(s[last:sp.start])
+			b.WriteString(m.redacted(sp, v))
+			last = sp.end
+			stats[placeholder.NormalizeKind(sp.kind)]++
 			continue
 		}
 		id, kind, err := m.store.Put(sp.kind, s[sp.start:sp.end])
@@ -366,7 +390,9 @@ func pieces(s string, f span, chosen []span) []span {
 			end--
 		}
 		if strings.IndexFunc(s[start:end], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
-			out = append(out, span{start: start, end: end, kind: f.kind})
+			p := f
+			p.start, p.end, p.field, p.escapes = start, end, false, false
+			out = append(out, p)
 		}
 	}
 	start := f.start
@@ -440,4 +466,31 @@ func jsonEscaped(v string) string {
 	enc.Encode(v)
 	b := bytes.TrimRight(buf.Bytes(), "\n")
 	return string(b[1 : len(b)-1])
+}
+
+func fromMatch(d detect.Match, escapes bool) span {
+	return span{
+		start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: escapes,
+		redact: d.Redact, keepFirst: d.KeepFirst, keepLast: d.KeepLast,
+	}
+}
+
+// redacted returns the redaction token for v. The tag is the start of the
+// value's keyed ID, computed but not stored, so the same value gets the same
+// token every turn and different values different ones. The kept characters
+// are letters and digits from each end, and only when the value has more
+// than twice as many: a short value shows nothing.
+func (m *Masker) redacted(sp span, v string) string {
+	var alnum []byte
+	for i := 0; i < len(v); i++ {
+		if isWord(v[i]) {
+			alnum = append(alnum, v[i])
+		}
+	}
+	first, last := "", ""
+	if keep := sp.keepFirst + sp.keepLast; keep > 0 && len(alnum) > 2*keep {
+		first = string(alnum[:sp.keepFirst])
+		last = string(alnum[len(alnum)-sp.keepLast:])
+	}
+	return placeholder.FormatRedacted(sp.kind, first, last, m.store.ID(v)[:placeholder.RedactedTagLen])
 }

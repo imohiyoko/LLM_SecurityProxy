@@ -72,3 +72,26 @@ rules:
       - {label: moderate, match: '^[3-4]級$'}
       - {label: other}
     enabled: false
+
+  # Modes: how a match is masked.
+  #   restore      (default) placeholder, stored locally, restored in replies
+  #   redact       replaced by [REDACTED:<KIND>:*1234:<tag>]; never stored or
+  #                restored. keep_first / keep_last show up to 10 letters and
+  #                digits from the ends (only when the value is more than
+  #                twice that long). For values the agent must never get back.
+  #   approximate  placeholder with the amount rounded into the kind
+  #                (__LLMSP_SALARY_ABOUT_4500K_...__), restored like restore.
+  #                digits: significant digits, default 2.
+  - id: bank_account
+    kind: BANK_ACCOUNT
+    keys: [account_number, 口座番号]
+    mode: redact
+    keep_last: 3
+    enabled: false
+
+  - id: bonus
+    kind: BONUS
+    keys: [bonus, 賞与]
+    mode: approximate
+    digits: 2
+    enabled: false

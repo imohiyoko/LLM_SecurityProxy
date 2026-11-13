@@ -195,7 +195,7 @@ addressed as `<ruleset id>:<rule id>`, e.g. `builtin/pii:email`.
 | Ruleset | Default | Contents |
 |---|---|---|
 | `builtin/credentials` | on | private keys (PEM, PGP), AWS keys, GitHub / GitLab / Slack (incl. app-level) / Anthropic / OpenAI / Google / Stripe / npm tokens, Slack webhooks, JWTs, passwords in URLs (`scheme://user:pass@host`), `Authorization` header credentials |
-| `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked), person names by field name (`userName`, `display_name`, `FULL_NAME`, ...) |
+| `builtin/pii` | on | e-mail addresses, card numbers (Luhn-checked, redacted: last four digits kept, never stored), person names by field name (`userName`, `display_name`, `FULL_NAME`, ...) |
 | `builtin/generic` | on | `password=` / `api_key:` / `HF_TOKEN=` style assignments (also `:=`, `=>`, XML elements, PHP `define()`) |
 | `builtin/network` | off | IPv4 addresses |
 
@@ -264,6 +264,45 @@ A tier label tells the model something about the value on purpose: choose
 tiers no finer than you are willing to share. A value keeps the kind it was
 first masked with, so changing the tiers does not relabel values already in
 the store.
+
+### Modes: restore, redact, approximate
+
+Each rule sets how its matches are masked with `mode`:
+
+| Mode | The model sees | Stored | Restored in replies |
+|---|---|---|---|
+| `restore` (default) | `__LLMSP_EMAIL_3f9a1c2b5d0e__` | yes, encrypted | yes |
+| `redact` | `[REDACTED:CREDIT_CARD:*1234:0a1b2c3d]` | no | no |
+| `approximate` | `__LLMSP_SALARY_ABOUT_4500K_3f9a1c2b5d0e__` | yes, encrypted | yes |
+
+```yaml
+rules:
+  - id: account
+    kind: BANK_ACCOUNT
+    keys: [account_number]
+    mode: redact
+    keep_last: 3          # keep_first / keep_last: up to 10 letters and digits in all
+  - id: salary
+    kind: SALARY
+    keys: [salary, 年収]
+    mode: approximate
+    digits: 2             # significant digits, default 2: 4,523,000円 → 4500K
+```
+
+- `redact` is for values the agent should never get back, such as card
+  numbers: `builtin/pii` redacts them and keeps the last four digits. The
+  token's tag tells different values apart without revealing them; the same
+  value gets the same token every turn. Characters are kept only when the
+  value has more than twice as many letters and digits, so a short value
+  shows nothing. Since the value is not stored, it is not masked by exact
+  match later: it is redacted wherever its rule finds it, and only there.
+  Use `mode: restore` in your own copy of the ruleset to keep card numbers
+  restorable (to write test fixtures, say).
+- `approximate` writes the amount, rounded, into the kind (`K`, `M`, `B`,
+  `T` for thousands to trillions). A value that is not an amount gets the
+  plain kind. It is an alternative to `tiers` and cannot be combined with
+  them; `redact` can, and the token then carries the tier label.
+- `llmsp rules list` shows each rule's mode.
 
 ### Sharing rulesets with a team
 

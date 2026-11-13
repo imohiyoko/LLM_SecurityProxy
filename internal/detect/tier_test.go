@@ -105,3 +105,28 @@ func TestKindFor(t *testing.T) {
 		t.Errorf("untiered kindFor = %q", got)
 	}
 }
+
+func TestApproximateFigure(t *testing.T) {
+	cases := []struct {
+		n      float64
+		digits int
+		want   string
+	}{
+		{4523000, 2, "4500K"},
+		{4523000, 1, "5M"},
+		{125000000, 2, "130M"},
+		{15000000, 2, "15M"},
+		{980, 2, "980"},
+		{987, 2, "990"},
+		{120000, 3, "120K"},
+		{-3400, 2, "MINUS3400"},
+		{0, 2, "0"},
+		{0.4, 2, "0"},
+		{2.5e12, 2, "2500B"},
+	}
+	for _, c := range cases {
+		if got := Approximate(c.n, c.digits); got != c.want {
+			t.Errorf("Approximate(%v, %d) = %q, want %q", c.n, c.digits, got, c.want)
+		}
+	}
+}

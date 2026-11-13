@@ -88,10 +88,12 @@ func TestKnownValueWithoutContext(t *testing.T) {
 // different value and is not masked in part. Next to punctuation, Japanese
 // text, or after an escape (\n, %3D), it is still masked.
 func TestKnownValueBoundary(t *testing.T) {
-	m, _ := newMasker(t)
+	m, st := newMasker(t)
+	// Card numbers are redacted and not stored, so store this one as a
+	// known value directly.
 	card := strings.ReplaceAll(testsecret.Card(), " ", "")
-	if out, _ := m.String("card "+card, Stats{}, nil); strings.Contains(out, card) {
-		t.Fatalf("not masked: %s", out)
+	if _, _, err := st.Put("SECRET", card); err != nil {
+		t.Fatal(err)
 	}
 	for _, in := range []string{card + "2112", "9" + card, "id" + card + "x", `"a\\n` + card + `"`} {
 		if out, _ := m.String(in, Stats{}, nil); out != in {
@@ -216,7 +218,7 @@ func TestIDsReportIssuedPlaceholders(t *testing.T) {
 }
 
 // A 19-digit card overlaps the 16-digit reading of its first groups; the
-// whole card is masked, not just its prefix.
+// whole card is redacted, not just its prefix.
 func TestNineteenDigitCardMaskedWhole(t *testing.T) {
 	m, _ := newMasker(t)
 	card := "6011" + " 0000 0000 0000 001"
@@ -224,9 +226,9 @@ func TestNineteenDigitCardMaskedWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := regexp.MustCompile(`^card ` + placeholder.Pattern.String() + ` exp 12/29$`)
+	want := regexp.MustCompile(`^card \[REDACTED:CREDIT_CARD:\*0001:[0-9a-f]{8}\] exp 12/29$`)
 	if !want.MatchString(out) {
-		t.Errorf("got %q, want the card replaced by one placeholder", out)
+		t.Errorf("got %q, want the card replaced by one redaction token", out)
 	}
 }
 

@@ -433,7 +433,7 @@ func rulesList(args []string) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "STATE\tRULE\tKIND\tSOURCE")
+	fmt.Fprintln(w, "STATE\tRULE\tKIND\tMODE\tSOURCE")
 	for _, s := range states {
 		state := "off"
 		if s.On {
@@ -447,7 +447,14 @@ func rulesList(args []string) error {
 			}
 			kind += "_{" + strings.Join(labels, ",") + "}"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", state, rules.FullID(s.Set.ID, s.Spec.ID), kind, s.Set.Source)
+		mode := s.Spec.Mode
+		if mode == "" {
+			mode = "restore"
+		}
+		if s.Spec.KeepFirst > 0 || s.Spec.KeepLast > 0 {
+			mode += fmt.Sprintf("(%d+%d)", s.Spec.KeepFirst, s.Spec.KeepLast)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", state, rules.FullID(s.Set.ID, s.Spec.ID), kind, mode, s.Set.Source)
 	}
 	return w.Flush()
 }

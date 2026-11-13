@@ -103,3 +103,46 @@ func TestTierErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestModeErrors(t *testing.T) {
+	cases := map[string]string{
+		"unknown":        "mode: hide",
+		"keep restore":   "keep_last: 4",
+		"keep negative":  "{mode: redact, keep_last: -1}",
+		"keep too many":  "{mode: redact, keep_first: 6, keep_last: 6}",
+		"digits restore": "digits: 3",
+		"digits range":   "{mode: approximate, digits: 9}",
+		"tiers approx":   "{mode: approximate, tiers: [{label: a}]}",
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			body := "id: x\nrules:\n  - id: r\n    kind: SALARY\n    keys: [salary]\n"
+			if strings.HasPrefix(extra, "{") {
+				body = "id: x\nrules:\n  - " + strings.TrimSuffix(extra, "}") + ", id: r, kind: SALARY, keys: [salary]}\n"
+			} else {
+				body += "    " + extra + "\n"
+			}
+			writeFile(t, dir, "x.yaml", body)
+			c, err := Load([]string{dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Compile(Selection{}); err == nil {
+				t.Errorf("no error for %s", body)
+			} else {
+				t.Log(err)
+			}
+		})
+	}
+	// Too long a kind for approximate.
+	dir := t.TempDir()
+	writeFile(t, dir, "x.yaml", "id: x\nrules:\n  - {id: r, kind: VERY_LONG_KIND_NAME_HERE, keys: [a], mode: approximate}\n")
+	c, err := Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Compile(Selection{}); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Errorf("err = %v", err)
+	}
+}

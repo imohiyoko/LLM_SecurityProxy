@@ -70,3 +70,28 @@ func CouldBePrefix(t string) bool {
 	}
 	return true
 }
+
+// A redaction token stands for a value that was removed for good: it is not
+// stored and never restored. It looks like [REDACTED:CREDIT_CARD:*1234:0a1b2c3d],
+// with the kept characters (before and after the *) when the rule keeps some,
+// and an 8-hex tag that tells different values apart.
+const (
+	RedactedPrefix = "[REDACTED:"
+	RedactedTagLen = 8
+	// MaxKept bounds the characters a redaction token shows.
+	MaxKept = 10
+)
+
+// RedactedPattern matches a complete redaction token. Group 1 is the kind,
+// group 2 the kept characters with their *, if any.
+var RedactedPattern = regexp.MustCompile(`\[REDACTED:([A-Z0-9_]{1,32}):(?:([0-9A-Za-z]{0,10}\*[0-9A-Za-z]{0,10}):)?[0-9a-f]{8}\]`)
+
+// FormatRedacted builds a redaction token. first and last are the characters
+// kept from each end; tag identifies the value without revealing it.
+func FormatRedacted(kind, first, last, tag string) string {
+	k := NormalizeKind(kind)
+	if first == "" && last == "" {
+		return RedactedPrefix + k + ":" + tag + "]"
+	}
+	return RedactedPrefix + k + ":" + first + "*" + last + ":" + tag + "]"
+}

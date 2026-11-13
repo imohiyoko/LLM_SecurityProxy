@@ -172,6 +172,29 @@ few choices (a disability grade) grouped into classes.
 - The notice tells the model that a kind may end with a tier label it can
   reason with.
 
+### Modes
+
+A rule's `mode` decides what replaces its matches.
+
+- `restore` (default): a placeholder; the value is stored and restored.
+- `redact`: a token `[REDACTED:<KIND>:<first>*<last>:<tag>]`, or without the
+  kept part when the rule keeps nothing. The value is neither stored nor added
+  to the request's restore scope, so no response can bring it back. The tag
+  is the first 8 hex characters of the value's keyed ID, computed and thrown
+  away: the same value gives the same token every turn (prompt caching and a
+  consistent conversation), different values different tokens. At most 10
+  letters and digits are kept, and only from a value with more than twice
+  as many. An incoming token is protected like an issued placeholder, so
+  history is not masked twice; a token whose kept part is longer than 10 is
+  not a token the proxy wrote and is masked like any text. A redacted value
+  is not a known value: it is redacted wherever its rule finds it, and
+  missed where only the known-value pass would find it (`\n4111...` in JSON
+  source, where `\b` does not hold). Card numbers are redacted by default.
+- `approximate`: `restore`, with the amount rounded to `digits` significant
+  digits (default 2) in the kind: `SALARY_ABOUT_4500K`. Load-time checks keep
+  room for the figure in the 32-character kind; a figure that still does not
+  fit, or a value that is not an amount, gets the plain kind.
+
 ## Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value

@@ -61,6 +61,16 @@ func (t *Tier) matches(v string, n float64, ok bool) bool {
 // the label of the first tier v falls into. A value no tier takes keeps the
 // plain kind; it is still masked.
 func (r *Rule) kindFor(v string) string {
+	if r.Mode == ModeApproximate {
+		if n, ok := ParseNumber(v); ok {
+			// An amount too large to fit the kind segment keeps the plain kind
+			// rather than a truncated, wrong figure.
+			if k := placeholder.NormalizeKind(r.Kind) + "_ABOUT_" + Approximate(n, r.ApproxDigits); len(k) <= placeholder.MaxKindLen {
+				return k
+			}
+		}
+		return r.Kind
+	}
 	if len(r.Tiers) == 0 {
 		return r.Kind
 	}
@@ -261,4 +271,36 @@ func leadingEnUnit(s string) (float64, int) {
 		}
 	}
 	return best, size
+}
+
+// Approximate rounds n to digits significant digits (at least 1) and writes it
+// with the largest of K, M, B and T that leaves a whole number, in the
+// [A-Z0-9] alphabet of a kind: 4,523,000 with 2 digits is 4500K, 125,000,000
+// is 130M, 980 is 980. A negative amount starts with MINUS.
+func Approximate(n float64, digits int) string {
+	if digits < 1 {
+		digits = 1
+	}
+	prefix := ""
+	if n < 0 {
+		prefix, n = "MINUS", -n
+	}
+	if n == 0 {
+		return prefix + "0"
+	}
+	exp := math.Floor(math.Log10(n))
+	step := math.Pow(10, exp-float64(digits-1))
+	r := math.Round(n/step) * step
+	if r < 1 {
+		return prefix + "0"
+	}
+	for _, u := range []struct {
+		suffix string
+		size   float64
+	}{{"T", 1e12}, {"B", 1e9}, {"M", 1e6}, {"K", 1e3}} {
+		if r >= u.size && math.Mod(r, u.size) == 0 {
+			return prefix + strconv.FormatFloat(r/u.size, 'f', 0, 64) + u.suffix
+		}
+	}
+	return prefix + strconv.FormatFloat(r, 'f', 0, 64)
 }
