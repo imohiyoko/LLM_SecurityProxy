@@ -439,7 +439,15 @@ func rulesList(args []string) error {
 		if s.On {
 			state = "on"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", state, rules.FullID(s.Set.ID, s.Spec.ID), s.Spec.Kind, s.Set.Source)
+		kind := s.Spec.Kind
+		if len(s.Spec.Tiers) > 0 {
+			labels := make([]string, len(s.Spec.Tiers))
+			for i, t := range s.Spec.Tiers {
+				labels[i] = strings.ToUpper(t.Label)
+			}
+			kind += "_{" + strings.Join(labels, ",") + "}"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", state, rules.FullID(s.Set.ID, s.Spec.ID), kind, s.Set.Source)
 	}
 	return w.Flush()
 }

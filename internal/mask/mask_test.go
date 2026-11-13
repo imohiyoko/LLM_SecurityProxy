@@ -1,11 +1,14 @@
 package mask
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
@@ -356,5 +359,67 @@ func TestEscapedFieldValue(t *testing.T) {
 	later, _ := m.String(`Jane "JD" Doe joined`, Stats{}, nil)
 	if strings.Contains(later, "Jane") {
 		t.Fatalf("decoded name not known: %s", later)
+	}
+}
+
+// A tiered rule writes the tier label into the placeholder, and the value is
+// restored as it was.
+func TestTieredKind(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hr.yaml"), []byte(`
+id: org/hr
+rules:
+  - id: salary
+    kind: SALARY
+    keys: [salary]
+    tiers:
+      - {label: under_3m, below: 300万}
+      - {label: 3m_6m, below: 600万}
+      - {label: 6m_plus, at_least: 600万}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := rules.Load([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := c.Compile(rules.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(detect.New(compiled), st, nil)
+
+	stats, ids := Stats{}, IDs{}
+	in := "salary: 4,500,000円\n"
+	out, err := m.String(in, stats, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "salary: __LLMSP_SALARY_3M_6M_") || stats["SALARY_3M_6M"] != 1 {
+		t.Fatalf("out = %q, stats = %v", out, stats)
+	}
+	if back, _ := unmask.Replace(out, st, unmask.Identity); back != in {
+		t.Errorf("restored %q, want %q", back, in)
+	}
+	// Seen once in a field, the amount is masked with its tier in free text.
+	out, err = m.String("she earns 4,500,000円 a year", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "__LLMSP_SALARY_3M_6M_") {
+		t.Errorf("free text: %q", out)
+	}
+	// Structured field.
+	out, err = m.Field("salary", "8000000", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "__LLMSP_SALARY_6M_PLUS_") {
+		t.Errorf("Field = %q", out)
 	}
 }

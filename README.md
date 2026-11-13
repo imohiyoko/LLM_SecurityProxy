@@ -221,6 +221,44 @@ A value that was masked once is masked everywhere afterwards, even without the
 context that first revealed it, unless it is part of a longer run of ASCII letters
 and digits (`<card number>2112` is a different value and is left as it is).
 
+### Tiers: the range of a value without the value
+
+Some values have no format of their own and too many possible values to list,
+such as salaries, or so few that the model gains nothing from a bare
+placeholder, such as a disability grade. A rule with `tiers` still masks the
+value, but adds the label of the first tier it falls into to the kind, so the
+model can tell the range or class and reason with it:
+
+```yaml
+rules:
+  - id: salary
+    kind: SALARY
+    keys: [salary, annual_income, 年収]
+    tiers:
+      - {label: under_3m, below: 300万}     # also 3000000, 3M, ¥3,000,000
+      - {label: 3m_6m, below: 600万}
+      - {label: 6m_plus, at_least: 600万}   # below + at_least for a range
+  - id: disability
+    kind: DISABILITY
+    keys: [disability_grade]
+    tiers:
+      - {label: severe, values: [1級, 2級]}
+      - {label: moderate, match: '^[3-4]級$'}
+      - {label: other}                     # no condition: everything else, last
+```
+
+`salary: 4,500,000円` becomes `salary: __LLMSP_SALARY_3M_6M_1a2b3c4d5e6f__`.
+Amounts are read with `,` separators, a currency sign or code, `k` / `M` /
+`B` suffixes and `千` / `万` / `億` units (`1億2000万`, `$120k`, `30万円/月`).
+A value that is not an amount (`非公開`, `500万〜600万`) is taken by no amount
+tier; if no later tier takes it, it is masked with the plain kind (`SALARY`).
+Tiers work with `keys`, `pattern` and `values` rules alike.
+
+A tier label tells the model something about the value on purpose: choose
+tiers no finer than you are willing to share. A value keeps the kind it was
+first masked with, so changing the tiers does not relabel values already in
+the store.
+
 ### Sharing rulesets with a team
 
 Rulesets are plain files, so a team can keep them in a private repository and

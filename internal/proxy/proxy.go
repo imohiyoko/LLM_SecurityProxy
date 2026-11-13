@@ -30,7 +30,9 @@ const Notice = "Some sensitive values in this conversation were replaced by a lo
 	"with placeholders of the form __LLMSP_<KIND>_<id>__. Treat each placeholder as an opaque stand-in " +
 	"for the real value. Whenever the value is needed (in code, commands, file edits or replies), write " +
 	"the placeholder exactly as it appears, character for character; the proxy restores the real value " +
-	"locally. Do not guess, alter, split, re-case, encode or ask for the real values."
+	"locally. Do not guess, alter, split, re-case, encode or ask for the real values. " +
+	"A kind may end with a tier label that gives the range or class of the hidden value " +
+	"(SALARY_3M_6M: an amount from 3M up to 6M); you may reason with that label, but it is not the value."
 
 // Server is an http.Handler.
 type Server struct {

@@ -41,3 +41,34 @@ rules:
     kind: MEMBER_ID
     pattern: '\bM-\d{12}\b'
     enabled: false
+
+  # Tiers: the value is still masked, but the label of the first tier it
+  # falls into is added to the kind, so the model sees the range or class
+  # (__LLMSP_SALARY_3M_6M_...__) and not the value. Tiers are tried in order.
+  #
+  # Amounts with many possible values: `below` / `at_least` (or both, for a
+  # range), written as 3000000, 300万, 3M or ¥3,000,000. A value is read as an
+  # amount with , separators, a currency sign or code, k / M / B suffixes and
+  # 千 / 万 / 億 units. A value that is not an amount (非公開) falls through to
+  # the next tier; if none takes it, it is masked with the plain kind.
+  - id: salary
+    kind: SALARY
+    keys: [salary, annual_income, base_pay, 年収, 給与]
+    tiers:
+      - {label: under_3m, below: 300万}
+      - {label: 3m_6m, below: 600万}
+      - {label: 6m_10m, below: 1000万}
+      - {label: 10m_plus, at_least: 1000万}
+    enabled: false
+
+  # Values with few possible choices: group them with `values` (exact, case
+  # and surrounding spaces ignored) or `match` (RE2). A tier with no
+  # condition takes everything else and must come last.
+  - id: disability
+    kind: DISABILITY
+    keys: [disability_grade, 障害等級]
+    tiers:
+      - {label: severe, values: [1級, 2級]}
+      - {label: moderate, match: '^[3-4]級$'}
+      - {label: other}
+    enabled: false

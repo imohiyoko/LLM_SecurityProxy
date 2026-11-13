@@ -40,6 +40,9 @@ type Rule struct {
 	Allow []*regexp.Regexp
 	// Validators must all return true for the value to be masked.
 	Validators []func(value string) bool
+	// Tiers, when set, add the label of the first tier the value falls into
+	// to Kind (see Tier).
+	Tiers []Tier
 }
 
 // Detector runs a set of rules.
@@ -87,7 +90,7 @@ func (d *Detector) Find(s string) []Match {
 			if !r.accepts(s[start:end]) {
 				continue
 			}
-			out = append(out, Match{Start: start, End: end, Kind: r.Kind, Rule: r.ID})
+			out = append(out, Match{Start: start, End: end, Kind: r.kindFor(s[start:end]), Rule: r.ID})
 		}
 	}
 	return out
@@ -116,7 +119,7 @@ func (r *Rule) field(k field.Key, value string) (Match, bool) {
 	if r.Keys == nil || !r.Keys.Has(k) || !r.accepts(value) {
 		return Match{}, false
 	}
-	return Match{End: len(value), Kind: r.Kind, Rule: r.ID, Field: true}, true
+	return Match{End: len(value), Kind: r.kindFor(value), Rule: r.ID, Field: true}, true
 }
 
 func (r *Rule) accepts(v string) bool {

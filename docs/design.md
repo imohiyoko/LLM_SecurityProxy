@@ -140,7 +140,35 @@ value is.
   `root`, `postgres`, ...), and references to other fields (`first_name`,
   `request.user.name`, `currentUser`).
 
-### Masking a string
+#### Tiers
+
+A rule with `tiers` masks as usual, but its kind is followed by the label of
+the first tier the matched value falls into (`SALARY_3M_6M`). It is for values
+that a placeholder hides completely although their range or class is what the
+task needs: amounts with too many values to list (salaries), and values with
+few choices (a disability grade) grouped into classes.
+
+- A tier has one kind of condition: an amount range (`below`, `at_least` or
+  both), `values` (equal, ignoring case and surrounding spaces) or `match`
+  (RE2). A tier without one takes every value that reaches it and must be
+  last. The first tier that takes a value wins.
+- An amount is read from the whole value: digits with `,` or `_` group
+  separators, a decimal point, full-width digits, a currency sign or code at
+  either end, a period marker at the end (`/月`, `/year`), and either one Latin
+  suffix (`k`, `M`, `B`) or chained Japanese units (`1億2000万`, `1千万`).
+  Anything else, ranges and surrounding words included, is not an amount and
+  is taken by no amount tier; if nothing else takes it, it keeps the plain
+  kind. Bounds in the YAML use the same notation.
+- The label is `[A-Za-z0-9_]`, upper-cased, and kind plus label must fit the
+  32-character kind segment, so a placeholder never truncates it.
+- The kind is decided when a value is first stored and kept after that, like
+  every kind. The known-value pass therefore writes the same tiered
+  placeholder in free text, and a change to the tiers applies to new values
+  only.
+- The notice tells the model that a kind may end with a tier label it can
+  reason with.
+
+## Masking a string
 
 1. Collect spans from: existing placeholders, enabled rules, and every value
    already in the store (exact match, minimum length 6, not inside a longer
