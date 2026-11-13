@@ -200,6 +200,43 @@ rules:
 	}
 }
 
+// Escapes in the remainder of a redacted value are redacted with it, and a
+// restore field cut by a redacted match does not store its unescaped whole.
+func TestRedactEscapes(t *testing.T) {
+	m, st := maskerWith(t, `
+id: org/hr
+rules:
+  - id: my_number
+    kind: MY_NUMBER
+    keys: [my_number]
+    mode: redact
+  - id: prefix
+    kind: PREFIX
+    pattern: 'my_number: "?\d{4}'
+    mode: redact
+  - id: ref
+    kind: REF
+    keys: [ref]
+  - id: digits
+    kind: DIGITS
+    pattern: '\d{12}'
+    mode: redact
+`)
+	got, _ := m.String(`my_number: "1234\/\t"`, Stats{}, nil)
+	if strings.Contains(got, `\/`) || strings.Contains(got, `\t`) {
+		t.Errorf("escapes left: %q", got)
+	}
+	if _, err := m.String(`ref: "123456789012\/"`, Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	known, _ := st.Known()
+	for _, v := range known {
+		if strings.Contains(v, "123456789012") {
+			t.Errorf("redacted digits stored in %q", v)
+		}
+	}
+}
+
 // A restore span that runs past a redacted one is masked in what is left.
 func TestRestoreAroundRedact(t *testing.T) {
 	m, _ := maskerWith(t, `

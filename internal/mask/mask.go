@@ -317,7 +317,8 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		}
 		// A value read from text holds its escapes (Jane \"JD\" Doe); store
 		// it unescaped too, so the known-value pass finds it in decoded text.
-		if v := s[f.start:f.end]; f.escapes && !f.redact && strings.ContainsRune(v, '\\') {
+		// Not when part of it was redacted: that part must not be stored.
+		if v := s[f.start:f.end]; f.escapes && !f.redact && !overlapsRedacted(f, chosen) && strings.ContainsRune(v, '\\') {
 			if u := unescape(v); len(u) >= MinKnownLen {
 				if _, _, err := m.store.Put(f.kind, u); err != nil {
 					return "", err
@@ -430,7 +431,9 @@ func pieces(s string, f span, chosen []span) []span {
 			start = i
 			continue
 		}
-		if f.escapes && s[i] == '\\' && i+1 < f.end {
+		// Escapes split a value to restore, so each piece restores anywhere.
+		// A redacted value is not restored: its escapes stay in its pieces.
+		if f.escapes && !f.redact && s[i] == '\\' && i+1 < f.end {
 			add(start, i)
 			_, w := utf8.DecodeRuneInString(s[i+1:])
 			i += 1 + w
