@@ -187,10 +187,17 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		}
 	}
 	// A redaction token from an earlier turn is kept as it is: it holds
-	// nothing to restore, and masking it again would nest tokens. Its kept
-	// part is short (placeholder.MaxKept), so it cannot carry a whole secret.
+	// nothing to restore, and masking it again would nest tokens. Only a
+	// token this store wrote is kept: its MAC covers the kind, the kept
+	// characters and the value tag. Anything else of that shape is ordinary
+	// text, and a secret in its kind or kept part is masked as usual.
 	for _, sub := range placeholder.RedactedPattern.FindAllStringSubmatchIndex(s, -1) {
-		if sub[4] < 0 || sub[5]-sub[4]-1 <= placeholder.MaxKept {
+		kind, kept := s[sub[2]:sub[3]], ""
+		if sub[4] >= 0 {
+			kept = s[sub[4]:sub[5]]
+		}
+		tag, mac := s[sub[6]:sub[7]], s[sub[8]:sub[9]]
+		if len(kept)-1 <= placeholder.MaxKept && mac == m.store.RedactMAC(kind, kept, tag) {
 			spans = append(spans, span{start: sub[0], end: sub[1], keep: true})
 		}
 	}
@@ -242,7 +249,10 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	for _, sp := range spans {
 		switch {
 		case !sp.keep && m.allowed(s[sp.start:sp.end]):
-		case sp.field:
+		// A field value to redact is not split around other spans like a
+		// field value to restore: redacting it whole hides whatever it
+		// contains and stores none of it.
+		case sp.field && !sp.redact:
 			fields = append(fields, sp)
 		default:
 			kept = append(kept, sp)
@@ -253,11 +263,14 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		return s, nil
 	}
 
-	// Protected spans win, then earlier, then longer.
+	// Protected spans win, then redacted ones, then earlier, then longer.
 	sort.Slice(spans, func(i, j int) bool {
 		a, b := spans[i], spans[j]
 		if a.keep != b.keep {
 			return a.keep
+		}
+		if a.redact != b.redact {
+			return a.redact
 		}
 		if a.start != b.start {
 			return a.start < b.start
@@ -265,14 +278,23 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		if a.end-a.start != b.end-b.start {
 			return a.end-a.start > b.end-b.start
 		}
-		// The same text found by a redact rule and as a known value (stored
-		// before the rule was set to redact) is redacted.
-		return a.redact && !b.redact
+		return false
 	})
 	var chosen []span
 	for _, sp := range spans {
 		if !overlapsAny(sp, chosen) {
 			chosen = append(chosen, sp)
+			continue
+		}
+		// A span that loses to a redacted one (a known value, or a restore
+		// rule matching more than the redacted text) is masked in what is
+		// left of it, so its other end is not sent in plaintext.
+		if !sp.keep && !sp.redact && overlapsRedacted(sp, chosen) {
+			for _, p := range pieces(s, sp, chosen) {
+				if !overlapsAny(p, chosen) && !m.allowed(s[p.start:p.end]) {
+					chosen = append(chosen, p)
+				}
+			}
 		}
 	}
 	// A field value is masked last, in what the other spans leave of it: it
@@ -492,5 +514,20 @@ func (m *Masker) redacted(sp span, v string) string {
 		first = string(alnum[:sp.keepFirst])
 		last = string(alnum[len(alnum)-sp.keepLast:])
 	}
-	return placeholder.FormatRedacted(sp.kind, first, last, m.store.ID(v)[:placeholder.RedactedTagLen])
+	kind := placeholder.NormalizeKind(sp.kind)
+	tag := m.store.ID(v)[:placeholder.RedactedTagLen]
+	kept := ""
+	if first != "" || last != "" {
+		kept = first + "*" + last
+	}
+	return placeholder.FormatRedacted(kind, kept, tag, m.store.RedactMAC(kind, kept, tag))
+}
+
+func overlapsRedacted(sp span, chosen []span) bool {
+	for _, c := range chosen {
+		if c.redact && sp.start < c.end && c.start < sp.end {
+			return true
+		}
+	}
+	return false
 }

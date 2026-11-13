@@ -75,7 +75,7 @@ rules:
 
   # Modes: how a match is masked.
   #   restore      (default) placeholder, stored locally, restored in replies
-  #   redact       replaced by [REDACTED:<KIND>:*1234:<tag>]; never stored or
+  #   redact       replaced by [REDACTED:<KIND>:*1234:<tag>.<mac>]; never stored or
   #                restored. keep_first / keep_last show up to 10 letters and
   #                digits from the ends (only when the value is more than
   #                twice that long). For values the agent must never get back.

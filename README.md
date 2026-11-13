@@ -272,7 +272,7 @@ Each rule sets how its matches are masked with `mode`:
 | Mode | The model sees | Stored | Restored in replies |
 |---|---|---|---|
 | `restore` (default) | `__LLMSP_EMAIL_3f9a1c2b5d0e__` | yes, encrypted | yes |
-| `redact` | `[REDACTED:CREDIT_CARD:*1234:0a1b2c3d]` | no | no |
+| `redact` | `[REDACTED:CREDIT_CARD:*1234:0a1b2c3d.4e5f6a7b]` | no | no |
 | `approximate` | `__LLMSP_SALARY_ABOUT_4500K_3f9a1c2b5d0e__` | yes, encrypted | yes |
 
 ```yaml
@@ -296,8 +296,9 @@ rules:
   value has more than twice as many letters and digits, so a short value
   shows nothing. Since the value is not stored, it is not masked by exact
   match later: it is redacted wherever its rule finds it, and only there.
-  Use `mode: restore` in your own copy of the ruleset to keep card numbers
-  restorable (to write test fixtures, say).
+  To keep card numbers restorable (to write test fixtures, say), copy
+  `builtin/pii` and, in both card rules, set `mode: restore` and remove
+  `keep_last`, which is only valid with `redact`.
 - `approximate` writes the amount, rounded, into the kind (`K`, `M`, `B`,
   `T` for thousands to trillions). A value that is not an amount gets the
   plain kind. It is an alternative to `tiers` and cannot be combined with

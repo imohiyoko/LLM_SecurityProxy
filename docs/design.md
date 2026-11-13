@@ -177,16 +177,24 @@ few choices (a disability grade) grouped into classes.
 A rule's `mode` decides what replaces its matches.
 
 - `restore` (default): a placeholder; the value is stored and restored.
-- `redact`: a token `[REDACTED:<KIND>:<first>*<last>:<tag>]`, or without the
-  kept part when the rule keeps nothing. The value is neither stored nor added
-  to the request's restore scope, so no response can bring it back. The tag
-  is the first 8 hex characters of the value's keyed ID, computed and thrown
-  away: the same value gives the same token every turn (prompt caching and a
-  consistent conversation), different values different tokens. At most 10
-  letters and digits are kept, and only from a value with more than twice
-  as many. An incoming token is protected like an issued placeholder, so
-  history is not masked twice; a token whose kept part is longer than 10 is
-  not a token the proxy wrote and is masked like any text. A redacted value
+- `redact`: a token `[REDACTED:<KIND>:<first>*<last>:<tag>.<mac>]`, or
+  without the kept part when the rule keeps nothing. The value is neither
+  stored nor added to the request's restore scope, so no response can bring
+  it back. The tag is the first 8 hex characters of the value's keyed ID,
+  computed and thrown away: the same value gives the same token every turn
+  (prompt caching and a consistent conversation), different values different
+  tokens. The MAC is a keyed, domain-separated HMAC over kind, kept part and
+  tag. At most 10 letters and digits are kept, and only from a value with
+  more than twice as many.
+- An incoming token is protected, so history is not masked twice, only if
+  its MAC checks out, as a placeholder is only if the store issued it. A
+  forged token is ordinary text, and a secret in its kind or kept part is
+  masked as usual.
+- A redact match wins over every other span but a protected one. A redact
+  field is masked whole rather than around the spans inside it, and a span
+  that loses to a redacted one (a known value, a wider restore match) is
+  masked in what is left of it, so a restore rule never stores the redacted
+  text and never leaves its own other end in plaintext. A redacted value
   is not a known value: it is redacted wherever its rule finds it, and
   missed where only the known-value pass would find it (`\n4111...` in JSON
   source, where `\b` does not hold). Card numbers are redacted by default.

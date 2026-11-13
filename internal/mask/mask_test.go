@@ -226,7 +226,7 @@ func TestNineteenDigitCardMaskedWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := regexp.MustCompile(`^card \[REDACTED:CREDIT_CARD:\*0001:[0-9a-f]{8}\] exp 12/29$`)
+	want := regexp.MustCompile(`^card \[REDACTED:CREDIT_CARD:\*0001:[0-9a-f]{8}\.[0-9a-f]{8}\] exp 12/29$`)
 	if !want.MatchString(out) {
 		t.Errorf("got %q, want the card replaced by one redaction token", out)
 	}

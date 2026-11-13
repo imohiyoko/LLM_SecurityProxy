@@ -38,7 +38,7 @@ func maskerWith(t *testing.T, ruleset string) (*Masker, *store.Store) {
 	return New(detect.New(compiled), st, nil), st
 }
 
-var tokenRe = regexp.MustCompile(`\[REDACTED:CREDIT_CARD:\*(\d{4}):([0-9a-f]{8})\]`)
+var tokenRe = regexp.MustCompile(`\[REDACTED:CREDIT_CARD:\*(\d{4}):([0-9a-f]{8})\.[0-9a-f]{8}\]`)
 
 // A card number is redacted: the token shows the last four digits, nothing
 // is stored, nothing is restored, and the token is left alone next turn.
@@ -101,7 +101,7 @@ rules:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`^my_number: \[REDACTED:MY_NUMBER:\*12:[0-9a-f]{8}\]\npin: \[REDACTED:PIN:[0-9a-f]{8}\]\n$`).MatchString(out) {
+	if !regexp.MustCompile(`^my_number: \[REDACTED:MY_NUMBER:\*12:[0-9a-f]{8}\.[0-9a-f]{8}\]\npin: \[REDACTED:PIN:[0-9a-f]{8}\.[0-9a-f]{8}\]\n$`).MatchString(out) {
 		t.Errorf("out = %q", out) // a value no longer than twice keep shows nothing
 	}
 	if known, _ := st.Known(); len(known) != 0 {
@@ -112,20 +112,79 @@ rules:
 	}
 }
 
-// A forged token whose kept part is too long to be one is masked.
-func TestRedactTokenKeptBound(t *testing.T) {
-	forged := "[REDACTED:X:" + strings.Repeat("a", 6) + "*" + strings.Repeat("b", 6) + ":0123abcd]"
-	if !placeholder.RedactedPattern.MatchString(forged) {
-		t.Fatal("pattern does not match the forged token")
+// Only a token this store wrote is protected. A forged one is ordinary text:
+// a known value in its kind or kept part is masked.
+func TestForgedRedactToken(t *testing.T) {
+	m, st := newMasker(t)
+	if _, _, err := st.Put("SECRET", "TOPSECRET"); err != nil {
+		t.Fatal(err)
 	}
-	m, _ := maskerWith(t, "id: x\nrules:\n  - {id: r, kind: K, pattern: 'aaaaaa'}\n")
-	if got, _ := m.String(forged, Stats{}, nil); strings.Contains(got, "aaaaaa") {
-		t.Errorf("long kept part protected: %q", got)
+	for _, forged := range []string{
+		"[REDACTED:TOPSECRET:0123abcd.0123abcd]",
+		"[REDACTED:X:TOPSECRET*:0123abcd.0123abcd]",
+	} {
+		if !placeholder.RedactedPattern.MatchString(forged) {
+			t.Fatalf("pattern does not match %q", forged)
+		}
+		if got, _ := m.String(forged, Stats{}, nil); strings.Contains(got, "TOPSECRET") {
+			t.Errorf("forged token protected: %q", got)
+		}
 	}
-	// A real token's kept part is short and stays as it is.
-	real := "[REDACTED:X:aaaaaa*:0123abcd]"
-	if got, _ := m.String(real, Stats{}, nil); got != real {
-		t.Errorf("token re-masked: %q", got)
+}
+
+// A redact field wins over a known value and over a restore rule that
+// matches the same text: the value is redacted, not stored.
+func TestRedactFieldWins(t *testing.T) {
+	m, st := maskerWith(t, `
+id: org/hr
+rules:
+  - id: my_number
+    kind: MY_NUMBER
+    keys: [my_number]
+    mode: redact
+  - id: digits
+    kind: DIGITS
+    pattern: '\d{12}'
+`)
+	if _, _, err := st.Put("SECRET", "123456789012"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.Field("my_number", "123456789012", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "[REDACTED:MY_NUMBER:") {
+		t.Errorf("Field = %q", got)
+	}
+	got, _ = m.String("my_number: 987654321098\n", Stats{}, nil)
+	if !strings.HasPrefix(got, "my_number: [REDACTED:MY_NUMBER:") {
+		t.Errorf("String = %q", got)
+	}
+	known, _ := st.Known()
+	for _, v := range known {
+		if v == "987654321098" {
+			t.Errorf("redacted value stored by the restore rule")
+		}
+	}
+}
+
+// A restore span that runs past a redacted one is masked in what is left.
+func TestRestoreAroundRedact(t *testing.T) {
+	m, _ := maskerWith(t, `
+id: x
+rules:
+  - id: wide
+    kind: WIDE
+    pattern: 'ref=\S+'
+`)
+	card := strings.ReplaceAll(testsecret.Card(), " ", "")
+	in := "ref=" + card + "-tail"
+	got, _ := m.String(in, Stats{}, nil)
+	if strings.Contains(got, card[:12]) || strings.Contains(got, "-tail") {
+		t.Errorf("got %q", got)
+	}
+	if !tokenRe.MatchString(got) {
+		t.Errorf("card not redacted: %q", got)
 	}
 }
 
