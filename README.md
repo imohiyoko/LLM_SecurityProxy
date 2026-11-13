@@ -299,6 +299,26 @@ rules:
   To keep card numbers restorable (to write test fixtures, say), copy
   `builtin/pii` and, in both card rules, set `mode: restore` and remove
   `keep_last`, which is only valid with `redact`.
+- Values with few possible choices (a disability grade, yes / no health
+  flags) leak through equality: the same value always gets the same tag, so
+  three distinct tags across a hundred records show who shares a grade, and
+  one known grade gives away the rest. The keyed ID itself cannot be
+  reversed or brute-forced without the local key. `link: context` derives a
+  redaction tag from the value and the text it was found in, so the same
+  value in two records gets two tokens while a record resent as history
+  keeps its token every turn. Do not add `tiers` to such a rule unless the
+  label is meant to be seen.
+
+  ```yaml
+  - id: disability
+    kind: SENSITIVE
+    keys: [disability_grade, 障害等級]
+    mode: redact
+    link: context
+  ```
+
+  Values masked by their field name in structured tool arguments have no
+  surrounding text, so there the tag is the same for the same value.
 - `approximate` writes the amount, rounded, into the kind (`K`, `M`, `B`,
   `T` for thousands to trillions). A value that is not an amount gets the
   plain kind. It is an alternative to `tiers` and cannot be combined with

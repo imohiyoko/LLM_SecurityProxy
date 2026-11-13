@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -74,6 +75,7 @@ type span struct {
 	// redact: replace by a redaction token, never store (detect.ModeRedact)
 	redact              bool
 	keepFirst, keepLast int
+	unlinkable          bool
 }
 
 // String masks s, adds what it masked to stats and the placeholder IDs it
@@ -338,7 +340,7 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 		if sp.redact {
 			v := s[sp.start:sp.end]
 			b.WriteString(s[last:sp.start])
-			b.WriteString(m.redacted(sp, v))
+			b.WriteString(m.redacted(sp, v, s))
 			last = sp.end
 			stats[placeholder.NormalizeKind(sp.kind)]++
 			continue
@@ -501,16 +503,20 @@ func jsonEscaped(v string) string {
 func fromMatch(d detect.Match, escapes bool) span {
 	return span{
 		start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: escapes,
-		redact: d.Redact, keepFirst: d.KeepFirst, keepLast: d.KeepLast,
+		redact: d.Redact, keepFirst: d.KeepFirst, keepLast: d.KeepLast, unlinkable: d.Unlinkable,
 	}
 }
 
-// redacted returns the redaction token for v. The tag is the start of the
-// value's keyed ID, computed but not stored, so the same value gets the same
-// token every turn and different values different ones. The kept characters
+// redacted returns the redaction token for v, found in s at sp. The tag is
+// the start of the value's keyed ID, computed but not stored, so the same
+// value gets the same token every turn and different values different ones.
+// For an unlinkable span the ID is of the value, its offset and the whole
+// string it was found in: history is resent byte for byte, so a record keeps
+// its token from turn to turn, but the same value in another record, or
+// another message, gets another one. The kept characters
 // are letters and digits from each end, and only when the value has more
 // than twice as many: a short value shows nothing.
-func (m *Masker) redacted(sp span, v string) string {
+func (m *Masker) redacted(sp span, v, s string) string {
 	var alnum []byte
 	for i := 0; i < len(v); i++ {
 		if isWord(v[i]) {
@@ -523,7 +529,11 @@ func (m *Masker) redacted(sp span, v string) string {
 		last = string(alnum[len(alnum)-sp.keepLast:])
 	}
 	kind := placeholder.NormalizeKind(sp.kind)
-	tag := m.store.ID(v)[:placeholder.RedactedTagLen]
+	id := v
+	if sp.unlinkable {
+		id = "llmsp unlinkable\x00" + v + "\x00" + strconv.Itoa(sp.start) + "\x00" + s
+	}
+	tag := m.store.ID(id)[:placeholder.RedactedTagLen]
 	kept := ""
 	if first != "" || last != "" {
 		kept = first + "*" + last

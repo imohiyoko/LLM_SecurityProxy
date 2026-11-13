@@ -23,6 +23,9 @@ type Match struct {
 	// the letters and digits shown from each end.
 	Redact              bool
 	KeepFirst, KeepLast int
+	// Unlinkable: the redaction tag depends on where the value is, not only
+	// on the value (see Rule.Unlinkable).
+	Unlinkable bool
 }
 
 // Rule is a single compiled detector.
@@ -56,6 +59,11 @@ type Rule struct {
 	// ApproxDigits is the number of significant digits ModeApproximate
 	// keeps.
 	ApproxDigits int
+	// Unlinkable, with ModeRedact, makes the token's tag depend on the
+	// value and the text around it, so the same value in two records gets
+	// two tokens. For values with few possible choices, where equal tags
+	// would show who shares a value.
+	Unlinkable bool
 }
 
 // Mode is how a rule masks what it matches.
@@ -78,7 +86,7 @@ const (
 func (r *Rule) match(start, end int, v string, field bool) Match {
 	return Match{
 		Start: start, End: end, Kind: r.kindFor(v), Rule: r.ID, Field: field,
-		Redact: r.Mode == ModeRedact, KeepFirst: r.KeepFirst, KeepLast: r.KeepLast,
+		Redact: r.Mode == ModeRedact, KeepFirst: r.KeepFirst, KeepLast: r.KeepLast, Unlinkable: r.Unlinkable,
 	}
 }
 

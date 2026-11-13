@@ -84,6 +84,11 @@ type Spec struct {
 	// shows from each end (keep_last: 4 for the last four of a card).
 	KeepFirst int `yaml:"keep_first"`
 	KeepLast  int `yaml:"keep_last"`
+	// Link, with mode redact, is what a token's tag is derived from: value
+	// (the default; the same value always gets the same tag) or context (the
+	// value and the text around it; the same value in two records gets two
+	// tags). Use context for values with few possible choices.
+	Link string `yaml:"link"`
 	// Digits is the number of significant digits mode approximate keeps.
 	// Omitted means 2.
 	Digits int `yaml:"digits"`
@@ -561,6 +566,16 @@ func compileMode(r *detect.Rule, s *Spec) error {
 		return fmt.Errorf("keep_first + keep_last must be at most %d", MaxKeep)
 	}
 	r.KeepFirst, r.KeepLast = s.KeepFirst, s.KeepLast
+	switch s.Link {
+	case "", "value":
+	case "context":
+		if r.Mode != detect.ModeRedact {
+			return errors.New("link: context is only valid with mode: redact")
+		}
+		r.Unlinkable = true
+	default:
+		return fmt.Errorf("unknown link %q (value, context)", s.Link)
+	}
 	if s.Digits != 0 && r.Mode != detect.ModeApproximate {
 		return errors.New("digits is only valid with mode: approximate")
 	}
