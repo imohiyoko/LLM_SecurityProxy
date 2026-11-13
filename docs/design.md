@@ -164,7 +164,11 @@ few choices (a disability grade) grouped into classes.
 - The kind is decided when a value is first stored and kept after that, like
   every kind. The known-value pass therefore writes the same tiered
   placeholder in free text, and a change to the tiers applies to new values
-  only.
+  only. That pass skips values under 6 bytes, which few-choice values often
+  are (`2級` is 4 bytes): such a value is masked in its field and left as
+  is elsewhere unless another rule finds it.
+- Only strings are masked. A JSON number under a matching key in tool
+  arguments is passed through: masking it would turn it into a string.
 - The notice tells the model that a kind may end with a tier label it can
   reason with.
 

@@ -2,6 +2,7 @@ package detect
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,10 @@ func TestParseNumber(t *testing.T) {
 		{"520.5万円", 5205000},
 		{"1千万", 10000000},
 		{"1億2000万円", 120000000},
+		{"1千500万円", 15000000},
+		{"1億2千500万円", 125000000},
+		{"2千万", 20000000},
+		{"1億2000", 100002000},
 		{"3百万円", 3000000},
 		{"30万円/月", 300000},
 		{"$120k", 120000},
@@ -38,7 +43,7 @@ func TestParseNumber(t *testing.T) {
 			t.Errorf("ParseNumber(%q) = %v, %v; want %v", c.in, got, ok, c.want)
 		}
 	}
-	for _, in := range []string{"", "abc", "5 months", "500万〜600万", "about 5M", "5M per year", "1.2.3", "万", "円", "N/A", "5,", "100 apples"} {
+	for _, in := range []string{"", "abc", "5 months", "500万〜600万", "about 5M", "5M per year", "1.2.3", "万", "5 6", "1千M", "300万k", "円", "N/A", "5,", "100 apples"} {
 		if got, ok := ParseNumber(in); ok {
 			t.Errorf("ParseNumber(%q) = %v, true; want not a number", in, got)
 		}
@@ -88,6 +93,12 @@ func TestKindFor(t *testing.T) {
 		if got := disability.kindFor(v); got != want {
 			t.Errorf("disability kindFor(%q) = %q, want %q", v, got, want)
 		}
+	}
+
+	// The label is added to the normalised kind, so it is never cut off.
+	long := Rule{Kind: "salary" + strings.Repeat("_", 30), Tiers: []Tier{{Label: "HIGH"}}}
+	if got := long.kindFor("1"); got != "SALARY_HIGH" {
+		t.Errorf("long kind: kindFor = %q", got)
 	}
 
 	if got := (&Rule{Kind: "NAME"}).kindFor("Jane"); got != "NAME" {

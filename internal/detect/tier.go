@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 )
 
 // Tier is one level of a tiered rule. A tiered rule still masks the whole
@@ -65,17 +67,20 @@ func (r *Rule) kindFor(v string) string {
 	n, ok := ParseNumber(v)
 	for i := range r.Tiers {
 		if r.Tiers[i].matches(v, n, ok) {
-			return r.Kind + "_" + r.Tiers[i].Label
+			// The same base as the label was checked against at load time,
+			// so kind and label always fit the placeholder together.
+			return placeholder.NormalizeKind(r.Kind) + "_" + r.Tiers[i].Label
 		}
 	}
 	return r.Kind
 }
 
-// Multipliers for unit suffixes after a number. Japanese units can be chained
-// (1億2000万); Latin ones end the number.
+// Multipliers for unit suffixes after a number. Japanese units chain
+// (1億2千500万); a Latin suffix ends the number.
 var (
-	jaUnits = map[rune]float64{'千': 1e3, '万': 1e4, '億': 1e8, '兆': 1e12}
-	enUnits = map[string]float64{
+	jaSmallUnits = map[string]float64{"千": 1e3, "百": 1e2}
+	jaLargeUnits = map[string]float64{"万": 1e4, "億": 1e8, "兆": 1e12}
+	enUnits      = map[string]float64{
 		"k": 1e3, "K": 1e3,
 		"m": 1e6, "M": 1e6, "mm": 1e6, "MM": 1e6, "mn": 1e6,
 		"b": 1e9, "B": 1e9, "bn": 1e9,
@@ -121,41 +126,61 @@ func ParseNumber(v string) (float64, bool) {
 		return 0, false
 	}
 
-	total, seen := 0.0, false
-	for s != "" {
+	// Japanese numerals group like 1億2千500万: digits, optionally scaled by
+	// a small unit (千, 百), add up to a group until a large unit (万, 億, 兆)
+	// multiplies the whole group. After a bare figure only a large unit or
+	// the end may follow.
+	total, group := 0.0, 0.0
+	pending, seen := false, false
+	for {
+		s = strings.TrimLeftFunc(s, unicode.IsSpace)
+		if s == "" {
+			break
+		}
+		if u, size := leadingUnit(s, jaLargeUnits); size > 0 {
+			if !pending {
+				return 0, false
+			}
+			total += group * u
+			group, pending, s = 0, false, s[size:]
+			continue
+		}
 		num, rest := leadingNumber(s)
 		if num == "" {
-			// A bare unit continues the previous figure only as 千万 (1千万).
 			return 0, false
 		}
 		f, err := strconv.ParseFloat(num, 64)
 		if err != nil {
 			return 0, false
 		}
+		seen = true
 		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-		mult := 1.0
-		if u, size := leadingJaUnit(rest); size > 0 {
-			mult, rest = u, rest[size:]
-			// 千万, 百万 and the like: a unit made of two characters.
-			if u2, size2 := leadingJaUnit(rest); size2 > 0 && u2 > u {
-				mult, rest = u*u2, rest[size2:]
+		if u, size := leadingUnit(rest, jaSmallUnits); size > 0 {
+			group, pending, s = group+f*u, true, rest[size:]
+			continue
+		}
+		if u, size := leadingUnit(rest, jaLargeUnits); size > 0 {
+			total += (group + f) * u
+			group, pending, s = 0, false, rest[size:]
+			continue
+		}
+		if u, size := leadingEnUnit(rest); size > 0 {
+			// A Latin suffix ends the figure: 5.2M, $120k.
+			if total != 0 || group != 0 || strings.TrimSpace(rest[size:]) != "" {
+				return 0, false
 			}
-		} else if strings.HasPrefix(rest, "百万") {
-			mult, rest = 1e6, rest[len("百万"):]
-		} else if u, size := leadingEnUnit(rest); size > 0 {
-			mult, rest = u, rest[size:]
-			if strings.TrimSpace(rest) != "" {
+			total, s = f*u, ""
+			break
+		}
+		group, pending = group+f, true
+		if rest != "" {
+			if _, size := leadingUnit(rest, jaLargeUnits); size == 0 {
 				return 0, false
 			}
 		}
-		total += f * mult
-		seen = true
-		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-		if mult == 1 && rest != "" {
-			return 0, false
-		}
 		s = rest
 	}
+	total += group
 	if !seen || math.IsInf(total, 0) || math.IsNaN(total) {
 		return 0, false
 	}
@@ -212,10 +237,10 @@ func leadingNumber(s string) (num, rest string) {
 	return b.String(), s[i:]
 }
 
-func leadingJaUnit(s string) (float64, int) {
-	for r, u := range jaUnits {
-		if strings.HasPrefix(s, string(r)) {
-			return u, len(string(r))
+func leadingUnit(s string, units map[string]float64) (float64, int) {
+	for k, u := range units {
+		if strings.HasPrefix(s, k) {
+			return u, len(k)
 		}
 	}
 	return 0, 0

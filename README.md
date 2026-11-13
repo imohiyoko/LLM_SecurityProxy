@@ -254,6 +254,12 @@ A value that is not an amount (`非公開`, `500万〜600万`) is taken by no am
 tier; if no later tier takes it, it is masked with the plain kind (`SALARY`).
 Tiers work with `keys`, `pattern` and `values` rules alike.
 
+Like every rule, a tiered rule sees text: file contents, command output and
+string values. A bare JSON number in tool arguments (`{"salary": 4500000}`)
+is not a string and is passed as it is. A value shorter than 6 bytes (`2級`
+is 4) is masked in its field but not when it shows up again in free text,
+as for any field rule.
+
 A tier label tells the model something about the value on purpose: choose
 tiers no finer than you are willing to share. A value keeps the kind it was
 first masked with, so changing the tiers does not relabel values already in
