@@ -1,12 +1,14 @@
 package mask
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
@@ -423,5 +425,124 @@ rules:
 	}
 	if !strings.HasPrefix(out, "__LLMSP_SALARY_6M_PLUS_") {
 		t.Errorf("Field = %q", out)
+	}
+}
+
+// A value stored later does not throw away cached results for text that
+// does not hold it, and does invalidate those for text that does.
+func TestCacheKeptForUnrelatedValue(t *testing.T) {
+	m, _ := newMasker(t)
+	plain := strings.Repeat("filler text ", 40)
+	holds := plain + `const p = "N3wSecret!xyz"`
+	m.String(plain, Stats{}, nil)
+	m.String(holds, Stats{}, nil)
+	m.String(`password: "N3wSecret!xyz"`, Stats{}, nil)
+
+	_, version := m.store.Known()
+	m.mu.Lock()
+	c := m.cache[cacheKey{s: plain}]
+	m.mu.Unlock()
+	if c.version == version {
+		t.Fatal("test needs the cached entry to predate the new value")
+	}
+	m.String(plain, Stats{}, nil)
+	m.mu.Lock()
+	c = m.cache[cacheKey{s: plain}]
+	m.mu.Unlock()
+	if c.version != version {
+		t.Fatalf("cached result for unrelated text was not kept: version %d, want %d", c.version, version)
+	}
+	if out, _ := m.String(holds, Stats{}, nil); strings.Contains(out, "N3wSecret!xyz") {
+		t.Fatalf("cached result hid a new value: %s", out)
+	}
+}
+
+// Values sharing a prefix, of different lengths, are each found, and a
+// repeated value is found at every occurrence.
+func TestKnownSharedPrefix(t *testing.T) {
+	m, st := newMasker(t)
+	vals := []string{"tenant-a1", "tenant-a1b2c3", "tenant-zz"}
+	for _, v := range vals {
+		if _, _, err := st.Put("TENANT", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := "x tenant-a1b2c3 y tenant-a1 z tenant-zz tenant-zz tenant-a1x"
+	out, err := m.String(in, Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ReplaceAll(out, "tenant-a1x", ""), "tenant-") {
+		t.Fatalf("a stored value was left: %s", out)
+	}
+	if !strings.Contains(out, "tenant-a1x") {
+		t.Fatalf("a value inside a longer word was masked: %s", out)
+	}
+	if n := strings.Count(out, placeholder.Prefix); n != 4 {
+		t.Fatalf("got %d placeholders, want 4: %s", n, out)
+	}
+}
+
+// A long stored value is found, and a long value that almost matches
+// everywhere does not make the scan quadratic in the text.
+func TestKnownLongValue(t *testing.T) {
+	m, st := newMasker(t)
+	long := strings.Repeat("k", 300) + "-tail"
+	near := strings.Repeat("a", 256<<10) + "b"
+	vals := []string{long, near}
+	for i := 0; i < 20; i++ { // past the small-map fast path of a Go map
+		vals = append(vals, fmt.Sprintf("other-value-%d", i))
+	}
+	for _, v := range vals {
+		if _, _, err := st.Put("KEY", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := m.String("x "+long+" y", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "kkkk") {
+		t.Fatalf("long value left: %.80s", out)
+	}
+
+	// The scan alone, without the detectors, which take their own time.
+	text := strings.Repeat("a", 2<<20)
+	start := time.Now()
+	m.known.find(text, func(int, int) {})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("scan of a near-miss long value took %v", d)
+	}
+
+	// An exact long value that occurs at every position of a longer run of
+	// the same letter is never standalone, and is not masked; finding that
+	// takes one pass, not one search per position.
+	run := strings.Repeat("r", 256<<10)
+	if _, _, err := st.Put("KEY", run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.String("y", Stats{}, nil); err != nil { // files the new value
+		t.Fatal(err)
+	}
+	var hits int
+	start = time.Now()
+	m.known.find(strings.Repeat("r", 2<<20), func(int, int) { hits++ })
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("scan of an overlapping long value took %v", d)
+	}
+	if hits != 0 {
+		t.Fatalf("value inside a longer run was found %d times", hits)
+	}
+	// Standalone occurrences next to each other are all found.
+	short := strings.Repeat("q", 200)
+	if _, _, err := st.Put("KEY", short); err != nil {
+		t.Fatal(err)
+	}
+	out, err = m.String(short+" "+short+"."+"x"+short, Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(out, placeholder.Prefix); n != 2 || !strings.Contains(out, "x"+short) {
+		t.Fatalf("got %d placeholders, want 2, and the run after x left", n)
 	}
 }

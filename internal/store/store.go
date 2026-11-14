@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,11 +36,12 @@ type Store struct {
 	aead cipher.AEAD
 	mac  []byte
 
-	mu      sync.RWMutex
-	values  map[string]entry // id -> entry
-	known   []string         // values, longest first
-	version uint64           // bumped whenever known changes
-	lastRow int64            // highest rowid read from the database
+	mu     sync.RWMutex
+	values map[string]entry // id -> entry
+	// known holds every value in the order it was stored. It is only ever
+	// appended to, so a slice handed out by Known stays valid as it is.
+	known   []string
+	lastRow int64 // highest rowid read from the database
 
 	// Another process on the same data directory (one llmsp per profile)
 	// adds values too; they are read at most once per syncEvery.
@@ -195,13 +195,7 @@ func (s *Store) load() error {
 	}
 	defer rows.Close()
 	// Values read before a failure are in s.values, where Resolve finds
-	// them; they must be in known too, or they would not be masked.
-	added := false
-	defer func() {
-		if added || s.version == 0 {
-			s.rebuildKnown()
-		}
-	}()
+	// them, and in known, so they are masked.
 	for rows.Next() {
 		var row int64
 		var id, kind string
@@ -221,7 +215,7 @@ func (s *Store) load() error {
 			return fmt.Errorf("store: decrypt %s: %w (wrong master.key?)", id, err)
 		}
 		s.values[id] = entry{kind: kind, value: string(pt)}
-		added = true
+		s.known = append(s.known, string(pt))
 	}
 	return rows.Err()
 }
@@ -289,7 +283,7 @@ func (s *Store) Put(kind, value string) (id, storedKind string, err error) {
 		return "", "", err
 	}
 	s.values[id] = entry{kind: kind, value: value}
-	s.rebuildKnown()
+	s.known = append(s.known, value)
 	return id, kind, nil
 }
 
@@ -326,28 +320,14 @@ func (s *Store) Check(ctx context.Context) error {
 	return err
 }
 
-// Known returns every stored value, longest first, and a version that changes
-// whenever the set changes. The slice must not be modified. Values stored by
-// another process on the same database are included within syncEvery.
-func (s *Store) Known() ([]string, uint64) {
+// Known returns every stored value, in the order stored, and its count as a
+// version. Values are only ever added, so known[:n] of a later call holds the
+// values of an earlier call with version n, and known[n:] what was added
+// since. The slice must not be modified. Values stored by another process on
+// the same database are included within syncEvery.
+func (s *Store) Known() (known []string, version uint64) {
 	s.sync()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.known, s.version
-}
-
-// rebuildKnown must be called with mu held for writing (or during Open).
-func (s *Store) rebuildKnown() {
-	known := make([]string, 0, len(s.values))
-	for _, e := range s.values {
-		known = append(known, e.value)
-	}
-	sort.Slice(known, func(i, j int) bool {
-		if len(known[i]) != len(known[j]) {
-			return len(known[i]) > len(known[j])
-		}
-		return known[i] < known[j]
-	})
-	s.known = known
-	s.version++
+	return s.known, uint64(len(s.known))
 }

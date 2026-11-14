@@ -255,12 +255,28 @@ rules. The trade-offs are accepted deliberately:
   so the cached prompt prefix changes once. This holds for every learned
   value, not only field-derived ones.
 
-Long strings are memoized because history is resent on every turn. The cache
-is invalidated whenever the set of known values changes, so a newly learned
-value is never missed. A result is cached only under the version of the known
-values it was computed with: when a concurrent request learns a value while a
-string is being masked, the result is not cached under the newer version, and
-the next turn masks the string again with the value included.
+Stored values are found with an index rather than one search per value, so
+the cost of this pass grows with the length of the text and not with the
+number of values stored. Each value (and its JSON-escaped form) is filed under
+its first 6 bytes, with the lengths of the values under each prefix; at each
+position of the text, only those lengths are looked up. Values that share a
+prefix, such as API keys of one provider, mostly share a length as well.
+A lookup reads the whole candidate, so only forms up to 128 bytes are indexed;
+longer ones (private keys, long tokens) are each searched for on their own
+(`strings.Index`, then Knuth-Morris-Pratt where one occurs, so that
+overlapping occurrences are listed in one pass), which stays linear in the
+text however long the value is.
+
+Long strings are memoized because history is resent on every turn. Values
+are only ever added, so the known values have a version, their count, and a
+result is cached under the version it was computed with. A cached result for
+an older version is used only if the string holds none of the values stored
+since (as is, JSON-escaped, or as the ID in a placeholder), so a newly learned
+value is never missed, and learning a value does not throw away the cached
+history that does not contain it. A result more than 64 values behind is
+masked again rather than checked. When a concurrent request learns a value
+while a string is being masked, the result is cached under the older version
+and is checked against that value on the next turn.
 
 ## Placeholders
 
