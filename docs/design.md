@@ -261,6 +261,9 @@ number of values stored. Each value (and its JSON-escaped form) is filed under
 its first 6 bytes, with the lengths of the values under each prefix; at each
 position of the text, only those lengths are looked up. Values that share a
 prefix, such as API keys of one provider, mostly share a length as well.
+A lookup reads the whole candidate, so only forms up to 128 bytes are indexed;
+longer ones (private keys, long tokens) are each searched for with
+`strings.Index`, which stays linear in the text however long the value is.
 
 Long strings are memoized because history is resent on every turn. Values
 are only ever added, so the known values have a version, their count, and a

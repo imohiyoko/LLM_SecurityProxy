@@ -2,6 +2,7 @@ package mask
 
 import (
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -13,6 +14,12 @@ import (
 // them, the text of that length. Values that share a prefix, such as API
 // keys of one provider, mostly share a length too, so the work per position
 // stays small however many values there are.
+//
+// A lookup reads the whole candidate, so only forms of up to maxIndexedLen
+// bytes are filed this way. Longer ones (private keys, long tokens) are few,
+// and each is searched for on its own with strings.Index, which is linear in
+// the text however long the form is: a scan stays linear in the text for any
+// mix of values.
 type knownIndex struct {
 	mu sync.RWMutex
 	n  int // values of the store's known list filed so far
@@ -24,7 +31,12 @@ type knownIndex struct {
 	// pair has a bit set for the first two bytes of every filed form, so
 	// most positions are passed over without a map lookup.
 	pair [1 << 16 / 64]uint64
+	// long holds the forms longer than maxIndexedLen.
+	long []string
 }
+
+// maxIndexedLen is the longest form filed in byPrefix.
+const maxIndexedLen = 128
 
 // update files known[idx.n:]. known is the store's known list, which only
 // grows.
@@ -57,6 +69,10 @@ func (idx *knownIndex) add(form string) {
 		return
 	}
 	idx.forms[form] = struct{}{}
+	if len(form) > maxIndexedLen {
+		idx.long = append(idx.long, form)
+		return
+	}
 	p := form[:MinKnownLen]
 	if !slices.Contains(idx.byPrefix[p], len(form)) {
 		idx.byPrefix[p] = append(idx.byPrefix[p], len(form))
@@ -94,6 +110,21 @@ func (idx *knownIndex) find(s string, hit func(start, end int)) {
 			}
 			next[f] = end
 			hit(i, end)
+		}
+	}
+	for _, f := range idx.long {
+		for off := 0; ; {
+			i := strings.Index(s[off:], f)
+			if i < 0 {
+				break
+			}
+			start := off + i
+			if !standalone(s, start, start+len(f)) {
+				off = start + 1
+				continue
+			}
+			hit(start, start+len(f))
+			off = start + len(f)
 		}
 	}
 }

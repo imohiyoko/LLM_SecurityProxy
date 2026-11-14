@@ -1,12 +1,14 @@
 package mask
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
@@ -478,5 +480,37 @@ func TestKnownSharedPrefix(t *testing.T) {
 	}
 	if n := strings.Count(out, placeholder.Prefix); n != 4 {
 		t.Fatalf("got %d placeholders, want 4: %s", n, out)
+	}
+}
+
+// A long stored value is found, and a long value that almost matches
+// everywhere does not make the scan quadratic in the text.
+func TestKnownLongValue(t *testing.T) {
+	m, st := newMasker(t)
+	long := strings.Repeat("k", 300) + "-tail"
+	near := strings.Repeat("a", 256<<10) + "b"
+	vals := []string{long, near}
+	for i := 0; i < 20; i++ { // past the small-map fast path of a Go map
+		vals = append(vals, fmt.Sprintf("other-value-%d", i))
+	}
+	for _, v := range vals {
+		if _, _, err := st.Put("KEY", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := m.String("x "+long+" y", Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "kkkk") {
+		t.Fatalf("long value left: %.80s", out)
+	}
+
+	// The scan alone, without the detectors, which take their own time.
+	text := strings.Repeat("a", 2<<20)
+	start := time.Now()
+	m.known.find(text, func(int, int) {})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("scan of a near-miss long value took %v", d)
 	}
 }
