@@ -513,4 +513,36 @@ func TestKnownLongValue(t *testing.T) {
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("scan of a near-miss long value took %v", d)
 	}
+
+	// An exact long value that occurs at every position of a longer run of
+	// the same letter is never standalone, and is not masked; finding that
+	// takes one pass, not one search per position.
+	run := strings.Repeat("r", 256<<10)
+	if _, _, err := st.Put("KEY", run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.String("y", Stats{}, nil); err != nil { // files the new value
+		t.Fatal(err)
+	}
+	var hits int
+	start = time.Now()
+	m.known.find(strings.Repeat("r", 2<<20), func(int, int) { hits++ })
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("scan of an overlapping long value took %v", d)
+	}
+	if hits != 0 {
+		t.Fatalf("value inside a longer run was found %d times", hits)
+	}
+	// Standalone occurrences next to each other are all found.
+	short := strings.Repeat("q", 200)
+	if _, _, err := st.Put("KEY", short); err != nil {
+		t.Fatal(err)
+	}
+	out, err = m.String(short+" "+short+"."+"x"+short, Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(out, placeholder.Prefix); n != 2 || !strings.Contains(out, "x"+short) {
+		t.Fatalf("got %d placeholders, want 2, and the run after x left", n)
+	}
 }

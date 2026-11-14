@@ -17,9 +17,8 @@ import (
 //
 // A lookup reads the whole candidate, so only forms of up to maxIndexedLen
 // bytes are filed this way. Longer ones (private keys, long tokens) are few,
-// and each is searched for on its own with strings.Index, which is linear in
-// the text however long the form is: a scan stays linear in the text for any
-// mix of values.
+// and each is searched for on its own in time linear in the text however
+// long the form is: a scan stays linear in the text for any mix of values.
 type knownIndex struct {
 	mu sync.RWMutex
 	n  int // values of the store's known list filed so far
@@ -113,18 +112,49 @@ func (idx *knownIndex) find(s string, hit func(start, end int)) {
 		}
 	}
 	for _, f := range idx.long {
-		for off := 0; ; {
-			i := strings.Index(s[off:], f)
-			if i < 0 {
-				break
+		// Most texts hold none of the long forms; strings.Index tells so in
+		// one pass. Where one occurs, every occurrence, overlapping ones
+		// included (a match next to a letter is not standalone, but the one
+		// a byte later may be), is listed in one more pass.
+		first := strings.Index(s, f)
+		if first < 0 {
+			continue
+		}
+		next := 0
+		occurrences(s[first:], f, func(i int) {
+			start := first + i
+			if end := start + len(f); start >= next && standalone(s, start, end) {
+				hit(start, end)
+				next = end
 			}
-			start := off + i
-			if !standalone(s, start, start+len(f)) {
-				off = start + 1
-				continue
-			}
-			hit(start, start+len(f))
-			off = start + len(f)
+		})
+	}
+}
+
+// occurrences calls at with the start of every occurrence of f in s,
+// overlapping ones included, in order, in time linear in len(s)+len(f)
+// (Knuth-Morris-Pratt).
+func occurrences(s, f string, at func(int)) {
+	fail := make([]int32, len(f))
+	for i, k := 1, int32(0); i < len(f); i++ {
+		for k > 0 && f[i] != f[k] {
+			k = fail[k-1]
+		}
+		if f[i] == f[k] {
+			k++
+		}
+		fail[i] = k
+	}
+	for i, k := 0, int32(0); i < len(s); i++ {
+		for k > 0 && s[i] != f[k] {
+			k = fail[k-1]
+		}
+		if s[i] == f[k] {
+			k++
+		}
+		if int(k) == len(f) {
+			at(i + 1 - len(f))
+			k = fail[k-1]
 		}
 	}
 }
