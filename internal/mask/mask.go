@@ -41,9 +41,10 @@ type Masker struct {
 	store *store.Store
 	allow []*regexp.Regexp
 
-	mu           sync.Mutex
-	cache        map[cacheKey]cached
-	cacheVersion uint64
+	known knownIndex
+
+	mu    sync.Mutex
+	cache map[cacheKey]cached
 
 	afterMask func() // test hook: runs between masking and caching
 }
@@ -59,7 +60,13 @@ type cached struct {
 	out   string
 	stats Stats
 	ids   []string
+	// version is the store's known-list version out was computed with.
+	version uint64
 }
+
+// cacheMaxDelta: a cached result older than this many stored values is
+// recomputed rather than checked against each of them.
+const cacheMaxDelta = 64
 
 // New creates a masker. Values matching any allow pattern are never masked.
 func New(det *detect.Detector, st *store.Store, allow []*regexp.Regexp) *Masker {
@@ -107,11 +114,17 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 
 	if len(s) >= cacheMinLen {
 		m.mu.Lock()
-		m.syncCache(version)
 		c, ok := m.cache[ck]
-		ok = ok && m.cacheVersion == version
 		m.mu.Unlock()
-		if ok {
+		if ok && m.stillValid(s, c.version, known, version) {
+			if c.version != version {
+				m.mu.Lock()
+				if cur, ok := m.cache[ck]; ok && cur.version < version {
+					cur.version = version
+					m.cache[ck] = cur
+				}
+				m.mu.Unlock()
+			}
 			for k, n := range c.stats {
 				stats[k] += n
 			}
@@ -120,9 +133,10 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 		}
 	}
 
+	m.known.update(known)
 	local := Stats{}
 	var issued []string
-	out, err := m.mask(s, known, extra, local, &issued)
+	out, err := m.mask(s, extra, local, &issued)
 	if err != nil {
 		return "", err
 	}
@@ -135,31 +149,45 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 		m.afterMask()
 	}
 	if len(s) >= cacheMinLen {
-		// out was computed with the known values of version, so it may only be
-		// cached under version. Values stored since then, by this call or by
-		// a concurrent one, are not in out; a later lookup under the newer
-		// version must recompute.
+		// out was computed with the known values of version, so it is cached
+		// under version: a later lookup checks it against every value stored
+		// since, by this call or a concurrent one. A result already cached
+		// under a newer version is kept.
 		m.mu.Lock()
-		m.syncCache(version)
-		if m.cacheVersion == version {
-			if len(m.cache) >= cacheMaxEntries {
+		if cur, ok := m.cache[ck]; !ok || cur.version <= version {
+			if !ok && len(m.cache) >= cacheMaxEntries {
 				m.cache = map[cacheKey]cached{}
 			}
-			m.cache[ck] = cached{out: out, stats: local, ids: issued}
+			m.cache[ck] = cached{out: out, stats: local, ids: issued, version: version}
 		}
 		m.mu.Unlock()
 	}
 	return out, nil
 }
 
-// syncCache drops the cache when version is newer than the one it holds.
-// An older version leaves it alone: that call's snapshot is stale, and the
-// cache is not rolled back for it. mu must be held.
-func (m *Masker) syncCache(version uint64) {
-	if version > m.cacheVersion {
-		m.cache = map[cacheKey]cached{}
-		m.cacheVersion = version
+// stillValid reports whether a result for s computed with the known values
+// of version from still holds with those of version to. It does unless s
+// holds a value stored in between, in a form the known-value pass finds, or
+// the ID of one: a placeholder for it is now one this store issued.
+func (m *Masker) stillValid(s string, from uint64, known []string, to uint64) bool {
+	if from == to {
+		return true
 	}
+	if from > to || to-from > cacheMaxDelta {
+		return false
+	}
+	for _, v := range known[from:to] {
+		if strings.Contains(s, m.store.ID(v)) {
+			return false
+		}
+		if len(v) < MinKnownLen {
+			continue
+		}
+		if strings.Contains(s, v) || needsJSONEscape(v) && strings.Contains(s, jsonEscaped(v)) {
+			return false
+		}
+	}
+	return true
 }
 
 func addIDs(ids IDs, add []string) {
@@ -173,7 +201,7 @@ func addIDs(ids IDs, add []string) {
 
 // mask masks s. extra are matches found by the caller from structure, in
 // addition to the detector's.
-func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stats, issued *[]string) (string, error) {
+func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]string) (string, error) {
 	var spans []span
 	// Only a placeholder this store issued, written exactly as issued, is
 	// protected. Anything else of that shape is masked as a whole: its kind
@@ -220,30 +248,9 @@ func (m *Masker) mask(s string, known []string, extra []detect.Match, stats Stat
 	// stands for the text matched, escapes included, like any span: restoring
 	// it gives back exactly that text in whatever context it was in (a string
 	// literal, a shell command).
-	for _, v := range known {
-		if len(v) < MinKnownLen {
-			break
-		}
-		forms := []string{v}
-		if needsJSONEscape(v) {
-			forms = append(forms, jsonEscaped(v))
-		}
-		for _, form := range forms {
-			for off := 0; ; {
-				i := strings.Index(s[off:], form)
-				if i < 0 {
-					break
-				}
-				start := off + i
-				if !standalone(s, start, start+len(form)) {
-					off = start + 1
-					continue
-				}
-				spans = append(spans, span{start: start, end: start + len(form), kind: "KNOWN"})
-				off = start + len(form)
-			}
-		}
-	}
+	m.known.find(s, func(start, end int) {
+		spans = append(spans, span{start: start, end: end, kind: "KNOWN"})
+	})
 	// Allowed values are dropped before overlaps are resolved, so that an
 	// allowed span never hides a secret inside it.
 	var fields []span
