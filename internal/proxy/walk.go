@@ -57,6 +57,52 @@ func toolArgs(k string, m map[string]any) bool {
 	return false
 }
 
+// schemaKey reports whether k holds a tool's JSON Schema: input_schema
+// (Anthropic) or parameters (OpenAI). Only used at the protocol level; inside
+// tool arguments the same names are plain data.
+func schemaKey(k string) bool { return k == "input_schema" || k == "parameters" }
+
+// walkSchema applies fn to the prose of a JSON Schema ("description" and
+// "title") and leaves everything else as it is. The API requires the schema to
+// be valid JSON Schema (Anthropic rejects the request with a 400 otherwise,
+// and strict tools must follow it exactly): a type name, a property name, an
+// enum value or a pattern that was masked, or a known value found inside one
+// ("old_string" becoming "old___LLMSP_...__"), would make it invalid. These
+// are the tool's own definition, written by the client, not conversation
+// content.
+func walkSchema(v any, fn func(string) (string, error)) (any, error) {
+	switch t := v.(type) {
+	case []any:
+		for i, e := range t {
+			nv, err := walkSchema(e, fn)
+			if err != nil {
+				return nil, err
+			}
+			t[i] = nv
+		}
+	case map[string]any:
+		for k, e := range t {
+			if str, ok := e.(string); ok {
+				if k != "description" && k != "title" {
+					continue
+				}
+				nv, err := fn(str)
+				if err != nil {
+					return nil, err
+				}
+				t[k] = nv
+				continue
+			}
+			nv, err := walkSchema(e, fn)
+			if err != nil {
+				return nil, err
+			}
+			t[k] = nv
+		}
+	}
+	return v, nil
+}
+
 // opaqueBlock reports whether a content block must be passed through byte for
 // byte. Thinking blocks are signed by the server; editing them is rejected.
 func opaqueBlock(m map[string]any) bool {
@@ -138,6 +184,8 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 				nv, err = args(str)
 			case isStr && !free && k == "arguments" && field != nil:
 				nv, err = maskArguments(str, fn, field)
+			case !free && schemaKey(k) && container(e):
+				nv, err = walkSchema(e, fn)
 			default:
 				nv, err = walk(e, fn, field, args, free || toolArgs(k, t) || skipKeys[k], strict)
 			}
