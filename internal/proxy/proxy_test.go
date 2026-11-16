@@ -666,3 +666,71 @@ func TestProtocolFieldSubtreesMasked(t *testing.T) {
 		t.Fatalf("scalar protocol field rewritten: %s", raw)
 	}
 }
+
+// The Anthropic tool use docs require a tool_result to echo toolset_name and a
+// programmatic call's caller to name its tool_use block. Neither may be
+// rewritten by masking, whatever it happens to look like.
+func TestAnthropicToolProtocolFieldsKept(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, body []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	})
+	secret := testsecret.GitHubToken()
+	body := `{"model":"m","messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"screenshot","toolset_name":"ts-` + secret + `","caller":{"type":"code_execution_20260120","tool_id":"srv-` + secret + `"},"input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","toolset_name":"ts-` + secret + `","content":[{"type":"text","text":"ok ` + secret + `"}]}]}
+	]}`
+	resp, err := http.Post(f.proxy.URL+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	var sent struct {
+		Messages []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	raw := <-f.received
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	use, res := sent.Messages[0].Content[0], sent.Messages[1].Content[0]
+	if use["toolset_name"] != "ts-"+secret || res["toolset_name"] != "ts-"+secret {
+		t.Fatalf("toolset_name rewritten: %s", raw)
+	}
+	if use["caller"].(map[string]any)["tool_id"] != "srv-"+secret {
+		t.Fatalf("caller.tool_id rewritten: %s", raw)
+	}
+	if strings.Contains(res["content"].([]any)[0].(map[string]any)["text"].(string), secret) {
+		t.Fatalf("tool result text not masked: %s", raw)
+	}
+}
+
+// OpenAI: a Chat tool message must carry the id of the tool call it answers,
+// and Responses function_call(_output) items carry namespace alongside name.
+func TestOpenAIToolProtocolFieldsKept(t *testing.T) {
+	secret := testsecret.GitHubToken()
+	cases := map[string]string{
+		"/v1/chat/completions": `{"model":"m","messages":[
+			{"role":"assistant","tool_calls":[{"id":"call-` + secret + `","type":"function","function":{"name":"f","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"call-` + secret + `","content":"ok ` + secret + `"}]}`,
+		"/v1/responses": `{"model":"m","input":[
+			{"type":"function_call","call_id":"c1","namespace":"ns-` + secret + `","name":"f","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","namespace":"ns-` + secret + `","output":"ok ` + secret + `"}]}`,
+	}
+	for path, body := range cases {
+		f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{}`)
+		})
+		resp, err := http.Post(f.proxy.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		raw := string(<-f.received)
+		if strings.Count(raw, secret) != 2 || strings.Contains(raw, "ok "+secret) {
+			t.Fatalf("%s: protocol field rewritten or content not masked: %s", path, raw)
+		}
+	}
+}

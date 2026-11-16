@@ -23,7 +23,11 @@ var skipKeys = map[string]bool{
 	"type":              true,
 	"id":                true,
 	"tool_use_id":       true,
+	"tool_id":           true, // "caller" of a programmatic tool call: names a tool_use block
+	"toolset_name":      true, // computer/browser use: a tool_result must echo it verbatim
 	"call_id":           true,
+	"tool_call_id":      true, // OpenAI Chat: a tool message must match tool_calls[].id
+	"namespace":         true, // OpenAI Responses: echoed with name on function_call(_output)
 	"name":              true,
 	"model":             true,
 	"role":              true,
