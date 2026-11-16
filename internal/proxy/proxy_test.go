@@ -734,3 +734,37 @@ func TestOpenAIToolProtocolFieldsKept(t *testing.T) {
 		}
 	}
 }
+
+// A tool's schema must stay valid JSON Schema (the API answers 400
+// otherwise). Even if a known value such as "string" or a property name is
+// stored, only the prose in description / title is masked.
+func TestToolSchemaStructureKept(t *testing.T) {
+	secret := testsecret.GitHubToken()
+	schema := `{"type":"object","description":"use ` + secret + `","properties":{"description":{"type":"string","description":"d ` + secret + `"},"mode":{"type":"string","enum":["` + secret + `","b"],"default":"` + secret + `"},"` + secret + `":{"type":"string"}},"required":["mode"],"additionalProperties":false}`
+	for path, body := range map[string]string{
+		"/v1/messages":         `{"model":"m","messages":[],"tools":[{"name":"t","description":"x","input_schema":` + schema + `}]}`,
+		"/v1/chat/completions": `{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"t","parameters":` + schema + `}}]}`,
+		"/v1/responses":        `{"model":"m","input":"hi","tools":[{"type":"function","name":"t","parameters":` + schema + `}]}`,
+	} {
+		f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{}`)
+		})
+		resp, err := http.Post(f.proxy.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		raw := string(<-f.received)
+		// Structure is untouched: type names, enum, default, property name.
+		for _, want := range []string{`"type":"string"`, `"enum":["` + secret + `","b"]`, `"default":"` + secret + `"`, `"` + secret + `":{`, `"required":["mode"]`} {
+			if !strings.Contains(raw, want) {
+				t.Fatalf("%s: schema structure changed, missing %s: %s", path, want, raw)
+			}
+		}
+		// Prose is still masked.
+		if strings.Contains(raw, "use "+secret) || strings.Contains(raw, "d "+secret) {
+			t.Fatalf("%s: schema description not masked: %s", path, raw)
+		}
+	}
+}

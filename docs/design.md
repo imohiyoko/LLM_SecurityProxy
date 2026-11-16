@@ -38,6 +38,11 @@ extra CA bundle for TLS-inspecting proxies.
      next turn. A masked key that would collide with another key of the same
      object gets a ` (2)`, ` (3)`, ... suffix, so no member is dropped and the
      same history is masked the same way every turn.
+   - A tool's JSON Schema (`input_schema`, OpenAI `parameters`) must stay valid
+     JSON Schema, so only its `description` and `title` are masked. Type
+     names, property names, `required`, `enum`, `default` and the rest pass
+     as they are: a known value found inside one (a stored word such as
+     `string`) would make the API reject the request with a 400.
    - Plain-text document sources (`media_type: text/*`) are content.
    - `thinking` / `redacted_thinking` / `reasoning` blocks are passed through
      byte for byte: they are signed and editing them makes the API reject the
