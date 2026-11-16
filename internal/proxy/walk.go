@@ -174,6 +174,11 @@ func walk(v any, fn func(string) (string, error), field func(key, value string) 
 			if !free && skipKeys[k] && !textData(k, t) && !container(e) {
 				continue
 			}
+			// stop_sequences are the client's own settings; the API matches them
+			// against the model's output, so a masked one never matches.
+			if !free && (k == "stop_sequences" || k == "stop") && container(e) {
+				continue
+			}
 			var nv any
 			var err error
 			str, isStr := e.(string)
