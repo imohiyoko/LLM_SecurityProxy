@@ -768,3 +768,26 @@ func TestToolSchemaStructureKept(t *testing.T) {
 		}
 	}
 }
+
+// stop_sequences / stop are settings matched against the model's output, not
+// conversation content: masking one would make it never match.
+func TestStopSequencesKept(t *testing.T) {
+	secret := testsecret.GitHubToken()
+	for path, body := range map[string]string{
+		"/v1/messages":         `{"model":"m","messages":[],"stop_sequences":["` + secret + `"]}`,
+		"/v1/chat/completions": `{"model":"m","messages":[],"stop":["` + secret + `"]}`,
+	} {
+		f := newFixture(t, func(w http.ResponseWriter, _ []byte) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{}`)
+		})
+		resp, err := http.Post(f.proxy.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if raw := string(<-f.received); !strings.Contains(raw, `["`+secret+`"]`) {
+			t.Fatalf("%s: stop sequence masked: %s", path, raw)
+		}
+	}
+}
