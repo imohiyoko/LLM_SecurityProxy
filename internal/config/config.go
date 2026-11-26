@@ -22,12 +22,15 @@ import (
 
 // Config is the file format. See config.example.yaml.
 type Config struct {
-	Listen           string   `yaml:"listen"`
-	AllowNonLoopback bool     `yaml:"allow_non_loopback"`
-	DataDir          string   `yaml:"data_dir"`
-	InjectNotice     *bool    `yaml:"inject_notice"`
-	Upstream         Upstream `yaml:"upstream"`
-	Rulesets         Rulesets `yaml:"rulesets"`
+	Listen           string `yaml:"listen"`
+	AllowNonLoopback bool   `yaml:"allow_non_loopback"`
+	DataDir          string `yaml:"data_dir"`
+	InjectNotice     *bool  `yaml:"inject_notice"`
+	// LogMaskedIDs adds the placeholder IDs masked in each request to its
+	// log line, to look them up with `llmsp masked show`.
+	LogMaskedIDs bool     `yaml:"log_masked_ids"`
+	Upstream     Upstream `yaml:"upstream"`
+	Rulesets     Rulesets `yaml:"rulesets"`
 	// Allowlist values are never masked, whichever rule matched them.
 	Allowlist []string `yaml:"allowlist"`
 	// Profiles are named listeners, each with its own upstream: one per

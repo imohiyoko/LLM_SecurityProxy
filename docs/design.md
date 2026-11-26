@@ -359,10 +359,27 @@ and is checked against that value on the next turn.
 sealed with AES-256-GCM using its ID as associated data. Values are decrypted
 into memory at start-up.
 
+Each row also records the full ID of the rule that first masked the value
+(`rule`) and the profile it was masked for (`profile`), for `llmsp masked
+list` / `show`. They are written once, with the value; a later match by
+another rule or as a known value does not change them. Databases created
+before these columns get them on open (`ALTER TABLE ... DEFAULT ''`), so old
+rows show no rule. Placeholder-shaped text the store did not issue is
+recorded under `llmsp:foreign-placeholder`. Redacted values are never stored
+and so never listed.
+
 ## Security notes
 
 - Loopback only by default; responses contain restored secrets.
-- Logs record counts per kind, never values.
+- Logs record counts per kind, never values. With `log_masked_ids` they also
+  record the placeholder IDs masked in a request (HMACs, which reveal nothing
+  without the key).
+- `llmsp masked` decrypts stored values for the user. It prints only the
+  first characters of a value unless `-show`, and nothing of a value masked
+  by `builtin/credentials` or `builtin/generic` (or of a kind those rules use,
+  for rows without a rule) unless `-show-secrets`. An agent with a shell can
+  run it too; what it prints goes back through the proxy and is masked again
+  as known values.
 - The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
   does not store it.
 
@@ -371,4 +388,4 @@ into memory at start-up.
 - OS keychain for the master key; retention / expiry of stored values.
 - NER-based detection (names, organisations) in free text. Names are only
   found by their field name, and in free text once seen in a field.
-- A CLI to list, look up and purge stored values.
+- Purging stored values.

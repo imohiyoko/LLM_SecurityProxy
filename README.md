@@ -221,6 +221,33 @@ A value that was masked once is masked everywhere afterwards, even without the
 context that first revealed it, unless it is part of a longer run of ASCII letters
 and digits (`<card number>2112` is a different value and is left as it is).
 
+### Finding what was masked
+
+When something is masked that should not be, find the value and the rule that
+caught it:
+
+```sh
+llmsp masked list                    # newest first: placeholder, rule, profile, time, value
+llmsp masked list -since 2h -rule builtin/pii -show
+llmsp masked list -grep status       # values containing "status"
+llmsp masked show __LLMSP_NAME_b050417708ad__   # one value, by placeholder or ID
+```
+
+- Values are printed shortened (`"Sta"… (13 chars)`) unless `-show`. Values
+  masked by `builtin/credentials` or `builtin/generic` are not printed at all
+  unless `-show-secrets`.
+- `rule` is the rule that masked the value first; a value stored before this
+  was recorded shows `-`. A value matched again later only as a known value
+  keeps its first rule.
+- Redacted values (card numbers by default) are never stored, so they are not
+  listed; use `llmsp rules test` on the text instead.
+- `log_masked_ids: true` in `config.yaml` adds the placeholder IDs masked in
+  each request to its `proxied` log line (`masked_ids=...`), to look them up
+  with `llmsp masked show`.
+
+To stop masking such a value, add it to `allowlist` (see `config.example.yaml`),
+or fix the rule with an `allow:` pattern.
+
 ### Tiers: the range of a value without the value
 
 Some values have no format of their own and too many possible values to list,

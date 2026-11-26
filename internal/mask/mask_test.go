@@ -546,3 +546,37 @@ func TestKnownLongValue(t *testing.T) {
 		t.Fatalf("got %d placeholders, want 2, and the run after x left", n)
 	}
 }
+
+// The rule that first masked a value, and the masker's profile, are stored
+// with it; a later match by another rule or as a known value keeps them.
+func TestOriginRecorded(t *testing.T) {
+	m, st := newMasker(t)
+	m.Profile = "claude"
+	if _, err := m.String("mail bob@corp.dev", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m.Profile = "codex"
+	if _, err := m.String("again: bob@corp.dev", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Field("userName", "Jane Q Doe", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]store.Origin{}
+	for _, r := range recs {
+		got[r.Value] = r.Origin
+	}
+	want := map[string]store.Origin{
+		"bob@corp.dev": {Rule: "builtin/pii:email", Profile: "claude"},
+		"Jane Q Doe":   {Rule: "builtin/pii:name", Profile: "codex"},
+	}
+	for v, o := range want {
+		if got[v] != o {
+			t.Errorf("%s: origin %+v, want %+v", v, got[v], o)
+		}
+	}
+}

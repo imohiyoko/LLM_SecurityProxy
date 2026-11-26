@@ -103,6 +103,10 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	_ = os.Chmod(dbPath, 0o600)
 
 	s := &Store{db: db, aead: aead, mac: macKey, values: map[string]entry{}}
@@ -111,6 +115,51 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// originColumns are added to secrets after its first release: the rule that
+// first masked a value and the profile it was masked for. Rows stored before
+// have them empty.
+var originColumns = []string{"rule", "profile"}
+
+// migrate adds the origin columns to a database created without them. Another
+// process may add them at the same time; a column that exists afterwards is
+// not an error.
+func migrate(db *sql.DB) error {
+	for _, col := range originColumns {
+		has, err := hasColumn(db, col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE secrets ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+			if has, herr := hasColumn(db, col); herr == nil && has {
+				continue
+			}
+			return fmt.Errorf("store: add column %s: %w", col, err)
+		}
+	}
+	return nil
+}
+
+func hasColumn(db *sql.DB, col string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('secrets')`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Close closes the database.
@@ -252,8 +301,20 @@ func (s *Store) RedactMAC(kind, kept, tag string) string {
 	return hex.EncodeToString(m.Sum(nil))[:placeholder.RedactedTagLen]
 }
 
+// Origin says where a value was first masked. It is recorded for `llmsp
+// masked list` and never changes once the value is stored.
+type Origin struct {
+	Rule    string // full rule ID, e.g. "builtin/pii:email"; empty if unknown
+	Profile string
+}
+
 // Put records value and returns its ID and the kind it was first stored under.
 func (s *Store) Put(kind, value string) (id, storedKind string, err error) {
+	return s.PutFrom(kind, value, Origin{})
+}
+
+// PutFrom is Put, recording o with a value stored for the first time.
+func (s *Store) PutFrom(kind, value string, o Origin) (id, storedKind string, err error) {
 	id = s.ID(value)
 	kind = placeholder.NormalizeKind(kind)
 
@@ -278,8 +339,8 @@ func (s *Store) Put(kind, value string) (id, storedKind string, err error) {
 	if e, ok := s.values[id]; ok { // raced with another Put
 		return id, e.kind, nil
 	}
-	if _, err := s.db.Exec(`INSERT OR IGNORE INTO secrets (id, kind, nonce, ciphertext, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, kind, nonce, ct, time.Now().Unix()); err != nil {
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO secrets (id, kind, nonce, ciphertext, created_at, rule, profile) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, kind, nonce, ct, time.Now().Unix(), o.Rule, o.Profile); err != nil {
 		return "", "", err
 	}
 	s.values[id] = entry{kind: kind, value: value}
@@ -330,4 +391,42 @@ func (s *Store) Known() (known []string, version uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.known, uint64(len(s.known))
+}
+
+// Record is one stored value with where and when it was first masked.
+type Record struct {
+	ID, Kind string
+	Origin
+	Created time.Time
+	Value   string
+}
+
+// Records reads every stored value from the database, oldest first,
+// including those stored by other processes since this one opened it. It is
+// for inspection by the user (`llmsp masked`), not for masking.
+func (s *Store) Records() ([]Record, error) {
+	rows, err := s.db.Query(`SELECT id, kind, rule, profile, created_at, nonce, ciphertext FROM secrets ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Record
+	for rows.Next() {
+		var r Record
+		var created int64
+		var nonce, ct []byte
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Rule, &r.Profile, &created, &nonce, &ct); err != nil {
+			return nil, err
+		}
+		if len(nonce) != s.aead.NonceSize() {
+			return nil, fmt.Errorf("store: decrypt %s: bad nonce length %d", r.ID, len(nonce))
+		}
+		pt, err := s.aead.Open(nil, nonce, ct, []byte(r.ID))
+		if err != nil {
+			return nil, fmt.Errorf("store: decrypt %s: %w (wrong master.key?)", r.ID, err)
+		}
+		r.Created, r.Value = time.Unix(created, 0), string(pt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

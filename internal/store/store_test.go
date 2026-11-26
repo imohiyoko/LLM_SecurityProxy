@@ -204,3 +204,80 @@ func TestSyncBadRowKeepsGoodRows(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordsOrigin(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	before := time.Now().Add(-time.Second)
+	id, _, err := s.PutFrom("email", "alice@corp.dev", Origin{Rule: "builtin/pii:email", Profile: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A later Put keeps the first origin.
+	if _, _, err := s.PutFrom("known", "alice@corp.dev", Origin{Rule: "me/x:y", Profile: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := s.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records: %+v", recs)
+	}
+	r := recs[0]
+	if r.ID != id || r.Kind != "EMAIL" || r.Value != "alice@corp.dev" ||
+		r.Origin != (Origin{Rule: "builtin/pii:email", Profile: "claude"}) || r.Created.Before(before) {
+		t.Fatalf("record: %+v", r)
+	}
+}
+
+// A database written before origins were recorded gets the columns, keeps
+// its values, and records origins from then on.
+func TestMigrateAddsOrigin(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := s.Put("email", "alice@corp.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rebuild the table as the first release created it.
+	if _, err := s.db.Exec(`CREATE TABLE old AS SELECT id, kind, nonce, ciphertext, created_at FROM secrets;
+		DROP TABLE secrets; ALTER TABLE old RENAME TO secrets`); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := hasColumn(s.db, "rule"); err != nil || has {
+		t.Fatalf("old schema has rule: %v %v", has, err)
+	}
+	s.Close()
+
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if v, ok := s.Resolve(old); !ok || v != "alice@corp.dev" {
+		t.Fatalf("old value: %q %v", v, ok)
+	}
+	if _, _, err := s.PutFrom("name", "Jane Doe", Origin{Rule: "builtin/pii:name"}); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := s.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 || recs[0].Rule != "" || recs[1].Rule != "builtin/pii:name" {
+		t.Fatalf("records: %+v", recs)
+	}
+	// Opening again finds the columns there.
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.Close()
+}

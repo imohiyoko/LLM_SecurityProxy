@@ -21,6 +21,10 @@ import (
 // exact match. Shorter values would mask unrelated text.
 const MinKnownLen = 6
 
+// ForeignPlaceholderRule is recorded as the rule of placeholder-shaped text
+// that this store did not issue, which is masked as a whole.
+const ForeignPlaceholderRule = "llmsp:foreign-placeholder"
+
 // cacheMinLen: only strings at least this long are memoized. Conversation
 // history is resent on every turn, so long tool results repeat constantly.
 const cacheMinLen = 256
@@ -45,6 +49,10 @@ type Masker struct {
 
 	mu    sync.Mutex
 	cache map[cacheKey]cached
+
+	// Profile is recorded with each value this masker stores first, so
+	// `llmsp masked list` can tell which profile masked it.
+	Profile string
 
 	afterMask func() // test hook: runs between masking and caching
 }
@@ -76,9 +84,10 @@ func New(det *detect.Detector, st *store.Store, allow []*regexp.Regexp) *Masker 
 type span struct {
 	start, end int
 	kind       string
-	keep       bool // existing placeholder: protect, do not mask
-	field      bool // whole value of a field: lowest priority, see mask
-	escapes    bool // field value read from text: split at backslash escapes
+	rule       string // full ID of the rule that matched; empty if none
+	keep       bool   // existing placeholder: protect, do not mask
+	field      bool   // whole value of a field: lowest priority, see mask
+	escapes    bool   // field value read from text: split at backslash escapes
 	// redact: replace by a redaction token, never store (detect.ModeRedact)
 	redact              bool
 	keepFirst, keepLast int
@@ -213,7 +222,7 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 		if stored, ok := m.store.Kind(id); ok && stored == kind {
 			spans = append(spans, span{start: sub[0], end: sub[1], keep: true})
 		} else {
-			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET"})
+			spans = append(spans, span{start: sub[0], end: sub[1], kind: "SECRET", rule: ForeignPlaceholderRule})
 		}
 	}
 	// A redaction token from an earlier turn is kept as it is: it holds
@@ -329,7 +338,7 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 		// Not when part of it was redacted: that part must not be stored.
 		if v := s[f.start:f.end]; f.escapes && !f.redact && !overlapsRedacted(f, chosen) && strings.ContainsRune(v, '\\') {
 			if u := unescape(v); len(u) >= MinKnownLen {
-				if _, _, err := m.store.Put(f.kind, u); err != nil {
+				if _, _, err := m.store.PutFrom(f.kind, u, m.origin(f)); err != nil {
 					return "", err
 				}
 			}
@@ -352,7 +361,7 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 			stats[placeholder.NormalizeKind(sp.kind)]++
 			continue
 		}
-		id, kind, err := m.store.Put(sp.kind, s[sp.start:sp.end])
+		id, kind, err := m.store.PutFrom(sp.kind, s[sp.start:sp.end], m.origin(sp))
 		if err != nil {
 			return "", err
 		}
@@ -507,9 +516,13 @@ func jsonEscaped(v string) string {
 	return string(b[1 : len(b)-1])
 }
 
+func (m *Masker) origin(sp span) store.Origin {
+	return store.Origin{Rule: sp.rule, Profile: m.Profile}
+}
+
 func fromMatch(d detect.Match, escapes bool) span {
 	return span{
-		start: d.Start, end: d.End, kind: d.Kind, field: d.Field, escapes: escapes,
+		start: d.Start, end: d.End, kind: d.Kind, rule: d.Rule, field: d.Field, escapes: escapes,
 		redact: d.Redact, keepFirst: d.KeepFirst, keepLast: d.KeepLast, unlinkable: d.Unlinkable,
 	}
 }

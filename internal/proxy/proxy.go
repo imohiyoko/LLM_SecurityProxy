@@ -51,6 +51,8 @@ type Server struct {
 	Log          *slog.Logger
 	// Profile names this listener in health responses.
 	Profile string
+	// LogIDs adds the placeholder IDs masked in each request to its log line.
+	LogIDs bool
 	// Health, if set, is checked by the health endpoint besides masking.
 	Health func(context.Context) error
 
@@ -182,6 +184,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, err = io.Copy(w, resp.Body)
 	}
 	attrs := []any{"status", resp.StatusCode, "masked", statsAttr(stats), "restored", restored}
+	if s.LogIDs {
+		attrs = append(attrs, "masked_ids", strings.Join(slices.Sorted(maps.Keys(ids)), ","))
+	}
 	if err != nil {
 		log.Error("response failed", append(attrs, "err", err)...)
 		return
