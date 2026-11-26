@@ -284,12 +284,18 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 	// literal, a shell command).
 	m.known.find(s, func(start, end int, v string) {
 		// A form other than the value itself (its JSON escape) is stored as
-		// a value of its own: record the rule of the value it stands for.
-		var rule string
+		// a value of its own: give it the kind and rule of the value it
+		// stands for, so it is listed (and hidden) like that value, also
+		// when the value was stored before rules were recorded.
+		sp := span{start: start, end: end, kind: "KNOWN"}
 		if end-start != len(v) {
-			rule = m.store.Rule(m.store.ID(v))
+			id := m.store.ID(v)
+			if k, ok := m.store.Kind(id); ok {
+				sp.kind = k
+			}
+			sp.rule = m.store.Rule(id)
 		}
-		spans = append(spans, span{start: start, end: end, kind: "KNOWN", rule: rule})
+		spans = append(spans, sp)
 	})
 	// Allowed values are dropped before overlaps are resolved, so that an
 	// allowed span never hides a secret inside it.

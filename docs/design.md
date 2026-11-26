@@ -364,7 +364,7 @@ Each row also records the full ID of the rule that first masked the value
 list` / `show`. They are written once, with the value; a later match by
 another rule or as a known value does not change them. A known value found in
 its JSON-escaped form is a new value (the escaped text); it is recorded with
-the rule of the value it is the escaped form of. Databases created
+the kind and rule of the value it is the escaped form of. Databases created
 before these columns get them on open (`ALTER TABLE ... DEFAULT ''`), so old
 rows show no rule. Placeholder-shaped text the store did not issue is
 recorded under `llmsp:foreign-placeholder`. Redacted values are never stored
