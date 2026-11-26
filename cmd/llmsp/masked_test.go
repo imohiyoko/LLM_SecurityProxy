@@ -147,6 +147,49 @@ rules:
 	}
 }
 
+// A KNOWN record without a rule, as an older llmsp stored the JSON-escaped
+// form of a value, is hidden when the value it stands for is a credential
+// (or cannot be found), and shown otherwise.
+func TestMaskedOldEscapedForms(t *testing.T) {
+	cfg, _ := maskedSetup(t)
+	dir := filepath.Dir(strings.TrimPrefix(cfg, "-config="))
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, mail := `to"k`+testsecret.Passphrase(), `"amy"@corp.dev`
+	esc := func(v string) string { return strings.ReplaceAll(v, `"`, `\"`) }
+	ids := map[string]string{}
+	for _, v := range []struct{ kind, value string }{
+		{"GITHUB_TOKEN", cred}, {"EMAIL", mail},
+		{"KNOWN", esc(cred)}, {"KNOWN", esc(mail)}, {"KNOWN", `orphan\"` + testsecret.Passphrase()},
+	} {
+		id, _, err := st.Put(v.kind, v.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[v.value] = id
+	}
+	st.Close()
+	show := func(v string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := maskedShow([]string{cfg, ids[v]}, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if out := show(esc(cred)); strings.Contains(out, testsecret.Passphrase()) {
+		t.Errorf("escaped credential shown:\n%s", out)
+	}
+	if out := show(`orphan\"` + testsecret.Passphrase()); strings.Contains(out, testsecret.Passphrase()) {
+		t.Errorf("orphan escaped form shown:\n%s", out)
+	}
+	if out := show(esc(mail)); !strings.Contains(out, "amy") {
+		t.Errorf("escaped e-mail hidden:\n%s", out)
+	}
+}
+
 // Inspecting an empty data directory creates no key.
 func TestMaskedNoStore(t *testing.T) {
 	dir := t.TempDir()

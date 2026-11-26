@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,10 +33,17 @@ type maskedView struct {
 	// secretKinds are the kinds of the rules in secretRulesets, for values
 	// stored before the rule was recorded.
 	secretKinds map[string]bool
+	// byValue holds the stored records, to find the value a KNOWN record
+	// without a rule (a JSON-escaped form stored by an older llmsp) is the
+	// escaped form of.
+	byValue map[string]store.Record
 }
 
-func newMaskedView(c *rules.Catalog, show, showSecrets bool) maskedView {
-	v := maskedView{show: show, showSecrets: showSecrets, secretKinds: map[string]bool{}}
+func newMaskedView(c *rules.Catalog, show, showSecrets bool, recs []store.Record) maskedView {
+	v := maskedView{show: show, showSecrets: showSecrets, secretKinds: map[string]bool{}, byValue: map[string]store.Record{}}
+	for _, r := range recs {
+		v.byValue[r.Value] = r
+	}
 	// The built-in kinds count even when a user ruleset replaces one of
 	// these sets: old rows were masked by whatever rules were in use then.
 	catalogs := []*rules.Catalog{c}
@@ -57,6 +65,17 @@ func newMaskedView(c *rules.Catalog, show, showSecrets bool) maskedView {
 // secret reports whether r was masked as a credential.
 func (v maskedView) secret(r store.Record) bool {
 	if r.Rule == mask.ForeignPlaceholderRule {
+		return true
+	}
+	if r.Rule == "" && r.Kind == "KNOWN" {
+		// An escaped form stored before kinds and rules were carried
+		// over: it is a secret if the value it stands for is one, and is
+		// hidden if that value cannot be found.
+		if u, ok := jsonUnescape(r.Value); ok && u != r.Value {
+			if o, ok := v.byValue[u]; ok && o.Kind != "KNOWN" {
+				return v.secret(o)
+			}
+		}
 		return true
 	}
 	if r.Rule == "" {
@@ -82,6 +101,15 @@ func (v maskedView) value(r store.Record, full bool, limit int) string {
 	}
 	keep := min(3, n/3)
 	return strconv.Quote(string([]rune(r.Value)[:keep])) + fmt.Sprintf("… (%d chars)", n)
+}
+
+// jsonUnescape decodes v as the inside of a JSON string literal.
+func jsonUnescape(v string) (string, bool) {
+	var u string
+	if err := json.Unmarshal([]byte(`"`+v+`"`), &u); err != nil {
+		return "", false
+	}
+	return u, true
 }
 
 // openStoreForReading opens the data directory's store, refusing to create
@@ -173,7 +201,7 @@ func maskedList(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	view := newMaskedView(e.catalog, show, showSecrets)
+	view := newMaskedView(e.catalog, show, showSecrets, recs)
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PLACEHOLDER\tRULE\tPROFILE\tFIRST MASKED\tVALUE")
 	for _, r := range shown {
@@ -228,7 +256,7 @@ func maskedShow(args []string, out io.Writer) error {
 		return fmt.Errorf("%s is not in the store (redacted values are never stored)", id)
 	}
 	r := recs[i]
-	view := newMaskedView(e.catalog, true, showSecrets)
+	view := newMaskedView(e.catalog, true, showSecrets, recs)
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "placeholder\t%s\n", placeholder.Format(r.Kind, r.ID))
 	fmt.Fprintf(w, "kind\t%s\n", r.Kind)

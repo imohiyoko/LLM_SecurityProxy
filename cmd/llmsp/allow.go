@@ -81,6 +81,7 @@ func allowAdd(args []string, c console) error {
 	// The stored record says how the value was masked; a value given with
 	// -value may not be stored (redacted, or not seen yet).
 	var rec store.Record
+	var recs []store.Record
 	found := false
 	if dbExists(e.cfg.DataDir) {
 		st, err := openStoreForReading(e.cfg.DataDir)
@@ -94,7 +95,7 @@ func allowAdd(args []string, c console) error {
 			st.Close()
 			return err
 		}
-		recs, err := st.Records()
+		recs, err = st.Records()
 		st.Close()
 		if err != nil {
 			return err
@@ -133,7 +134,7 @@ func allowAdd(args []string, c console) error {
 		}
 	}
 
-	view := newMaskedView(e.catalog, true, false)
+	view := newMaskedView(e.catalog, true, false, recs)
 	secret := view.secret(rec)
 	if secret && !force {
 		return fmt.Errorf("this value was masked by a credential rule (%s, %s); if you are sure it is not a secret, add -force", orDash(rec.Rule), orDash(rec.Kind))
@@ -220,7 +221,19 @@ func allowList(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "no values allowed")
 		return nil
 	}
-	view := newMaskedView(e.catalog, true, false)
+	var recs []store.Record
+	if dbExists(e.cfg.DataDir) {
+		st, err := openStoreForReading(e.cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		recs, err = st.Records()
+		st.Close()
+		if err != nil {
+			return err
+		}
+	}
+	view := newMaskedView(e.catalog, true, false, recs)
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "#\tPROFILE\tKIND\tRULE\tADDED\tVALUE")
 	for i, en := range entries {
