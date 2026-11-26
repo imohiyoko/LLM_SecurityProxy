@@ -509,7 +509,7 @@ func TestKnownLongValue(t *testing.T) {
 	// The scan alone, without the detectors, which take their own time.
 	text := strings.Repeat("a", 2<<20)
 	start := time.Now()
-	m.known.find(text, func(int, int) {})
+	m.known.find(text, func(int, int, string) {})
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("scan of a near-miss long value took %v", d)
 	}
@@ -526,7 +526,7 @@ func TestKnownLongValue(t *testing.T) {
 	}
 	var hits int
 	start = time.Now()
-	m.known.find(strings.Repeat("r", 2<<20), func(int, int) { hits++ })
+	m.known.find(strings.Repeat("r", 2<<20), func(int, int, string) { hits++ })
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("scan of an overlapping long value took %v", d)
 	}
@@ -544,5 +544,102 @@ func TestKnownLongValue(t *testing.T) {
 	}
 	if n := strings.Count(out, placeholder.Prefix); n != 2 || !strings.Contains(out, "x"+short) {
 		t.Fatalf("got %d placeholders, want 2, and the run after x left", n)
+	}
+}
+
+// The rule that first masked a value, and the masker's profile, are stored
+// with it; a later match by another rule or as a known value keeps them.
+func TestOriginRecorded(t *testing.T) {
+	m, st := newMasker(t)
+	m.Profile = "claude"
+	if _, err := m.String("mail bob@corp.dev", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m.Profile = "codex"
+	if _, err := m.String("again: bob@corp.dev", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Field("userName", "Jane Q Doe", Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]store.Origin{}
+	for _, r := range recs {
+		got[r.Value] = r.Origin
+	}
+	want := map[string]store.Origin{
+		"bob@corp.dev": {Rule: "builtin/pii:email", Profile: "claude"},
+		"Jane Q Doe":   {Rule: "builtin/pii:name", Profile: "codex"},
+	}
+	for v, o := range want {
+		if got[v] != o {
+			t.Errorf("%s: origin %+v, want %+v", v, got[v], o)
+		}
+	}
+}
+
+// A known value found in its JSON-escaped form is stored as a new value with
+// the kind of the value it stands for, also when that value has no rule
+// (stored before rules were recorded), so `llmsp masked` hides it alike.
+func TestEscapedKnownKeepsKind(t *testing.T) {
+	m, st := newMasker(t)
+	cred := `to"k` + testsecret.Passphrase()
+	mail := `"bob"@corp.dev`
+	for k, v := range map[string]string{"GITHUB_TOKEN": cred, "EMAIL": mail} {
+		if _, _, err := st.Put(k, v); err != nil { // no origin, like an old row
+			t.Fatal(err)
+		}
+	}
+	esc := func(v string) string { return strings.ReplaceAll(v, `"`, `\"`) }
+	if _, err := m.String(`{"a":"`+esc(cred)+`","b":"`+esc(mail)+`"}`, Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, r := range recs {
+		kinds[r.Value] = r.Kind
+	}
+	if kinds[esc(cred)] != "GITHUB_TOKEN" || kinds[esc(mail)] != "EMAIL" {
+		t.Fatalf("kinds: %v", kinds)
+	}
+}
+
+// A known value found in its JSON-escaped form is stored as a new value with
+// the rule of the value it stands for, so `llmsp masked` treats it alike.
+func TestEscapedKnownKeepsRule(t *testing.T) {
+	m, st := newMasker(t)
+	v := `pa"ss` + testsecret.Passphrase()
+	if _, _, err := st.PutFrom("SECRET", v, store.Origin{Rule: "builtin/generic:assignment"}); err != nil {
+		t.Fatal(err)
+	}
+	esc := strings.ReplaceAll(v, `"`, `\"`)
+	out, err := m.String(`{"cmd":"echo `+esc+`"}`, Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, testsecret.Passphrase()) {
+		t.Fatalf("leaked: %s", out)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range recs {
+		if r.Value == esc {
+			found = true
+			if r.Rule != "builtin/generic:assignment" {
+				t.Errorf("escaped form recorded with rule %q", r.Rule)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("escaped form not stored: %+v", recs)
 	}
 }

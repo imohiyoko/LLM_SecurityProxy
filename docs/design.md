@@ -359,10 +359,35 @@ and is checked against that value on the next turn.
 sealed with AES-256-GCM using its ID as associated data. Values are decrypted
 into memory at start-up.
 
+Each row also records the full ID of the rule that first masked the value
+(`rule`) and the profile it was masked for (`profile`), for `llmsp masked
+list` / `show`. They are written once, with the value; a later match by
+another rule or as a known value does not change them. A known value found in
+its JSON-escaped form is a new value (the escaped text); it is recorded with
+the kind and rule of the value it is the escaped form of. Such rows stored by an
+older llmsp have kind `KNOWN` and no rule; `llmsp masked` treats one as the
+value it decodes to, and hides it if that value is not stored. Databases created
+before these columns get them on open (`ALTER TABLE ... DEFAULT ''`), so old
+rows show no rule. Placeholder-shaped text the store did not issue is
+recorded under `llmsp:foreign-placeholder`. Redacted values are never stored
+and so never listed.
+
 ## Security notes
 
 - Loopback only by default; responses contain restored secrets.
-- Logs record counts per kind, never values.
+- Logs record counts per kind, never values. With `log_masked_ids` they also
+  record the placeholder IDs masked in a request (HMACs, which reveal nothing
+  without the key).
+- `llmsp masked` decrypts stored values for the user. It prints only the
+  first characters of a value unless `-show`, and nothing of a value masked
+  by `builtin/credentials` or `builtin/generic` (or of a kind those rules use,
+  for rows without a rule, including those of the built-in rulesets even when
+  a user file replaces them) unless `-show-secrets`. An agent with a shell can
+  run it too. Its output is masked again as known values only where it holds a
+  complete stored value in a form the known-value pass finds; a shortened
+  prefix, or a value quoted in a form other than JSON's, can reach the model
+  unmasked. Values from credential rules are not printed by default for this
+  reason.
 - The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
   does not store it.
 
@@ -371,4 +396,4 @@ into memory at start-up.
 - OS keychain for the master key; retention / expiry of stored values.
 - NER-based detection (names, organisations) in free text. Names are only
   found by their field name, and in free text once seen in a field.
-- A CLI to list, look up and purge stored values.
+- Purging stored values.

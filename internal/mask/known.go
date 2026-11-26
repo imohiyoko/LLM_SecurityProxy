@@ -22,8 +22,8 @@ import (
 type knownIndex struct {
 	mu sync.RWMutex
 	n  int // values of the store's known list filed so far
-	// forms holds every filed form.
-	forms map[string]struct{}
+	// forms maps every filed form to the stored value it is a form of.
+	forms map[string]string
 	// byPrefix maps the first MinKnownLen bytes of a form to the lengths of
 	// the forms starting with them.
 	byPrefix map[string][]int
@@ -49,25 +49,25 @@ func (idx *knownIndex) update(known []string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	if idx.forms == nil {
-		idx.forms, idx.byPrefix = map[string]struct{}{}, map[string][]int{}
+		idx.forms, idx.byPrefix = map[string]string{}, map[string][]int{}
 	}
 	for _, v := range known[min(idx.n, len(known)):] {
 		if len(v) < MinKnownLen {
 			continue
 		}
-		idx.add(v)
+		idx.add(v, v)
 		if needsJSONEscape(v) {
-			idx.add(jsonEscaped(v))
+			idx.add(jsonEscaped(v), v)
 		}
 	}
 	idx.n = max(idx.n, len(known))
 }
 
-func (idx *knownIndex) add(form string) {
+func (idx *knownIndex) add(form, value string) {
 	if _, ok := idx.forms[form]; ok {
 		return
 	}
-	idx.forms[form] = struct{}{}
+	idx.forms[form] = value
 	if len(form) > maxIndexedLen {
 		idx.long = append(idx.long, form)
 		return
@@ -80,10 +80,11 @@ func (idx *knownIndex) add(form string) {
 	idx.pair[b/64] |= 1 << (b % 64)
 }
 
-// find calls hit for every standalone occurrence of a filed form in s.
+// find calls hit for every standalone occurrence of a filed form in s, with
+// the stored value it is a form of.
 // Occurrences of the same form do not overlap: after one, the search for
 // that form goes on at its end.
-func (idx *knownIndex) find(s string, hit func(start, end int)) {
+func (idx *knownIndex) find(s string, hit func(start, end int, value string)) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	if len(idx.forms) == 0 {
@@ -101,14 +102,15 @@ func (idx *knownIndex) find(s string, hit func(start, end int)) {
 				continue
 			}
 			f := s[i:end]
-			if _, ok := idx.forms[f]; !ok || i < next[f] || !standalone(s, i, end) {
+			v, ok := idx.forms[f]
+			if !ok || i < next[f] || !standalone(s, i, end) {
 				continue
 			}
 			if next == nil {
 				next = map[string]int{}
 			}
 			next[f] = end
-			hit(i, end)
+			hit(i, end, v)
 		}
 	}
 	for _, f := range idx.long {
@@ -124,7 +126,7 @@ func (idx *knownIndex) find(s string, hit func(start, end int)) {
 		occurrences(s[first:], f, func(i int) {
 			start := first + i
 			if end := start + len(f); start >= next && standalone(s, start, end) {
-				hit(start, end)
+				hit(start, end, idx.forms[f])
 				next = end
 			}
 		})

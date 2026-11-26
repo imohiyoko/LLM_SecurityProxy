@@ -12,6 +12,10 @@
 //	                                              show rulesets and rules
 //	llmsp rules test [-config PATH] [-profile NAME] [FILE]
 //	                                              show what would be masked
+//	llmsp masked list [-config PATH] [-since D] [-kind K] [-rule R] [-profile P] [-grep S] [-show] [-show-secrets] [-n N]
+//	                                              show stored (masked) values, newest first
+//	llmsp masked show [-config PATH] [-show-secrets] PLACEHOLDER|ID
+//	                                              show one stored value and the rule that masked it
 package main
 
 import (
@@ -64,6 +68,8 @@ func run(args []string) error {
 		return profiles(args)
 	case "relax":
 		return relaxCmd(args)
+	case "masked":
+		return maskedCmd(args)
 	case "rules":
 		if len(args) == 0 {
 			return errors.New("usage: llmsp rules list|test")
@@ -185,15 +191,18 @@ func serve(args []string) error {
 		if named {
 			plog = log.With("profile", ep.Name)
 		}
+		masker := mask.New(det, st, allow)
+		masker.Profile = ep.Name
 		h := &proxy.Server{
 			Upstream:     upstream,
 			Client:       client,
-			Masker:       mask.New(det, st, allow),
+			Masker:       masker,
 			Resolver:     st,
 			AuthHeaders:  ep.Upstream.AuthHeaders,
 			InjectNotice: ep.InjectNotice,
 			Log:          plog,
 			Profile:      ep.Name,
+			LogIDs:       cfg.LogMaskedIDs,
 			Health:       st.Check,
 		}
 		handlers[ep.Name] = h
