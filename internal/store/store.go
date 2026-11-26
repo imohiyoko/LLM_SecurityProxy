@@ -55,7 +55,7 @@ type Store struct {
 const syncEvery = time.Second
 
 type entry struct {
-	kind, value string
+	kind, value, rule string
 }
 
 // Open opens (or creates) the key and database in dir.
@@ -238,7 +238,7 @@ func writeExclusive(path string, b []byte) error {
 // Rows are never deleted, so rowids only grow. mu must be held for writing
 // (or Open be running).
 func (s *Store) load() error {
-	rows, err := s.db.Query(`SELECT rowid, id, kind, nonce, ciphertext FROM secrets WHERE rowid > ? ORDER BY rowid`, s.lastRow)
+	rows, err := s.db.Query(`SELECT rowid, id, kind, rule, nonce, ciphertext FROM secrets WHERE rowid > ? ORDER BY rowid`, s.lastRow)
 	if err != nil {
 		return err
 	}
@@ -247,9 +247,9 @@ func (s *Store) load() error {
 	// them, and in known, so they are masked.
 	for rows.Next() {
 		var row int64
-		var id, kind string
+		var id, kind, rule string
 		var nonce, ct []byte
-		if err := rows.Scan(&row, &id, &kind, &nonce, &ct); err != nil {
+		if err := rows.Scan(&row, &id, &kind, &rule, &nonce, &ct); err != nil {
 			return err
 		}
 		s.lastRow = row
@@ -263,7 +263,7 @@ func (s *Store) load() error {
 		if err != nil {
 			return fmt.Errorf("store: decrypt %s: %w (wrong master.key?)", id, err)
 		}
-		s.values[id] = entry{kind: kind, value: string(pt)}
+		s.values[id] = entry{kind: kind, value: string(pt), rule: rule}
 		s.known = append(s.known, string(pt))
 	}
 	return rows.Err()
@@ -343,7 +343,7 @@ func (s *Store) PutFrom(kind, value string, o Origin) (id, storedKind string, er
 		id, kind, nonce, ct, time.Now().Unix(), o.Rule, o.Profile); err != nil {
 		return "", "", err
 	}
-	s.values[id] = entry{kind: kind, value: value}
+	s.values[id] = entry{kind: kind, value: value, rule: o.Rule}
 	s.known = append(s.known, value)
 	return id, kind, nil
 }
@@ -362,6 +362,13 @@ func (s *Store) Kind(id string) (string, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.values[id]
 	return e.kind, ok
+}
+
+// Rule returns the rule id was first masked by, or "" if unknown.
+func (s *Store) Rule(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.values[id].rule
 }
 
 // Check reports whether the database can still be written: a full disk or a

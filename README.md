@@ -257,8 +257,10 @@ llmsp allow rm 2                               # or: -value V [-profile P]
 
 - The value is matched exactly: wherever a rule or the known-value pass finds
   exactly this text, it is left as it is. A longer value that contains it is
-  masked as before. Use `allowlist` patterns in `config.yaml` or a rule's
-  `allow:` for anything broader.
+  masked as before. For anything broader, use `allowlist` patterns in
+  `config.yaml`, which also apply to stored values. A rule's own `allow:`
+  patterns only stop that rule's new matches; a value already stored is
+  still masked.
 - Entries are kept in plain text in `allow.json` in the data directory (mode
   0600), so you can review them. A running proxy reads the file again within a
   second; no restart. If the file cannot be read, nothing in it is allowed, and

@@ -510,7 +510,7 @@ func TestKnownLongValue(t *testing.T) {
 	// The scan alone, without the detectors, which take their own time.
 	text := strings.Repeat("a", 2<<20)
 	start := time.Now()
-	m.known.find(text, func(int, int) {})
+	m.known.find(text, func(int, int, string) {})
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("scan of a near-miss long value took %v", d)
 	}
@@ -527,7 +527,7 @@ func TestKnownLongValue(t *testing.T) {
 	}
 	var hits int
 	start = time.Now()
-	m.known.find(strings.Repeat("r", 2<<20), func(int, int) { hits++ })
+	m.known.find(strings.Repeat("r", 2<<20), func(int, int, string) { hits++ })
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("scan of an overlapping long value took %v", d)
 	}
@@ -622,5 +622,39 @@ func TestExactAllowed(t *testing.T) {
 	}
 	if out, _ := m.String(in, Stats{}, nil); strings.Contains(out, "bob@corp.dev") {
 		t.Fatalf("after removal: %s", out)
+	}
+}
+
+// A known value found in its JSON-escaped form is stored as a new value with
+// the rule of the value it stands for, so `llmsp masked` treats it alike.
+func TestEscapedKnownKeepsRule(t *testing.T) {
+	m, st := newMasker(t)
+	v := `pa"ss` + testsecret.Passphrase()
+	if _, _, err := st.PutFrom("SECRET", v, store.Origin{Rule: "builtin/generic:assignment"}); err != nil {
+		t.Fatal(err)
+	}
+	esc := strings.ReplaceAll(v, `"`, `\"`)
+	out, err := m.String(`{"cmd":"echo `+esc+`"}`, Stats{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, testsecret.Passphrase()) {
+		t.Fatalf("leaked: %s", out)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range recs {
+		if r.Value == esc {
+			found = true
+			if r.Rule != "builtin/generic:assignment" {
+				t.Errorf("escaped form recorded with rule %q", r.Rule)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("escaped form not stored: %+v", recs)
 	}
 }

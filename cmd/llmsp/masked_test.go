@@ -64,7 +64,9 @@ func TestMaskedList(t *testing.T) {
 		t.Errorf("placeholder or rule missing:\n%s", out)
 	}
 	// Newest first.
-	if strings.Index(out, "bob@") > strings.Index(out, "builtin/pii:name") {
+	email := strings.Index(out, placeholder.Format("EMAIL", ids["bob@corp.dev"]))
+	name := strings.Index(out, placeholder.Format("NAME", ids["Status Report"]))
+	if email < 0 || name < 0 || email > name {
 		t.Errorf("not newest first:\n%s", out)
 	}
 
@@ -117,6 +119,31 @@ func TestMaskedShow(t *testing.T) {
 	}
 	if _, err := show("nonsense"); err == nil {
 		t.Error("bad argument accepted")
+	}
+}
+
+// Rows without a rule are hidden by the built-in credential kinds even when
+// a user ruleset replaces builtin/credentials without those rules.
+func TestMaskedOldRowsHiddenWithReplacedRuleset(t *testing.T) {
+	cfg, ids := maskedSetup(t)
+	dir := filepath.Dir(strings.TrimPrefix(cfg, "-config="))
+	if err := os.MkdirAll(filepath.Join(dir, "rules.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rules.d", "creds.yaml"), []byte(`id: builtin/credentials
+rules:
+  - id: only
+    kind: OTHER_TOKEN
+    pattern: 'tok_[a-z]{20}'
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := maskedShow([]string{cfg, ids[testsecret.GitHubToken()+"x"]}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), testsecret.GitHubToken()) || !strings.Contains(out.String(), "hidden") {
+		t.Fatalf("old row shown:\n%s", out.String())
 	}
 }
 
