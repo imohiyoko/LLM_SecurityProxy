@@ -582,6 +582,35 @@ func TestOriginRecorded(t *testing.T) {
 }
 
 // A known value found in its JSON-escaped form is stored as a new value with
+// the kind of the value it stands for, also when that value has no rule
+// (stored before rules were recorded), so `llmsp masked` hides it alike.
+func TestEscapedKnownKeepsKind(t *testing.T) {
+	m, st := newMasker(t)
+	cred := `to"k` + testsecret.Passphrase()
+	mail := `"bob"@corp.dev`
+	for k, v := range map[string]string{"GITHUB_TOKEN": cred, "EMAIL": mail} {
+		if _, _, err := st.Put(k, v); err != nil { // no origin, like an old row
+			t.Fatal(err)
+		}
+	}
+	esc := func(v string) string { return strings.ReplaceAll(v, `"`, `\"`) }
+	if _, err := m.String(`{"a":"`+esc(cred)+`","b":"`+esc(mail)+`"}`, Stats{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, r := range recs {
+		kinds[r.Value] = r.Kind
+	}
+	if kinds[esc(cred)] != "GITHUB_TOKEN" || kinds[esc(mail)] != "EMAIL" {
+		t.Fatalf("kinds: %v", kinds)
+	}
+}
+
+// A known value found in its JSON-escaped form is stored as a new value with
 // the rule of the value it stands for, so `llmsp masked` treats it alike.
 func TestEscapedKnownKeepsRule(t *testing.T) {
 	m, st := newMasker(t)
