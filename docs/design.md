@@ -362,7 +362,9 @@ into memory at start-up.
 Each row also records the full ID of the rule that first masked the value
 (`rule`) and the profile it was masked for (`profile`), for `llmsp masked
 list` / `show`. They are written once, with the value; a later match by
-another rule or as a known value does not change them. Databases created
+another rule or as a known value does not change them. A known value found in
+its JSON-escaped form is a new value (the escaped text); it is recorded with
+the rule of the value it is the escaped form of. Databases created
 before these columns get them on open (`ALTER TABLE ... DEFAULT ''`), so old
 rows show no rule. Placeholder-shaped text the store did not issue is
 recorded under `llmsp:foreign-placeholder`. Redacted values are never stored
@@ -377,9 +379,13 @@ and so never listed.
 - `llmsp masked` decrypts stored values for the user. It prints only the
   first characters of a value unless `-show`, and nothing of a value masked
   by `builtin/credentials` or `builtin/generic` (or of a kind those rules use,
-  for rows without a rule) unless `-show-secrets`. An agent with a shell can
-  run it too; what it prints goes back through the proxy and is masked again
-  as known values.
+  for rows without a rule, including those of the built-in rulesets even when
+  a user file replaces them) unless `-show-secrets`. An agent with a shell can
+  run it too. Its output is masked again as known values only where it holds a
+  complete stored value in a form the known-value pass finds; a shortened
+  prefix, or a value quoted in a form other than JSON's, can reach the model
+  unmasked. Values from credential rules are not printed by default for this
+  reason.
 - The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
   does not store it.
 

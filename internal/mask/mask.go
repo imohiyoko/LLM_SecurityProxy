@@ -257,8 +257,14 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 	// stands for the text matched, escapes included, like any span: restoring
 	// it gives back exactly that text in whatever context it was in (a string
 	// literal, a shell command).
-	m.known.find(s, func(start, end int) {
-		spans = append(spans, span{start: start, end: end, kind: "KNOWN"})
+	m.known.find(s, func(start, end int, v string) {
+		// A form other than the value itself (its JSON escape) is stored as
+		// a value of its own: record the rule of the value it stands for.
+		var rule string
+		if end-start != len(v) {
+			rule = m.store.Rule(m.store.ID(v))
+		}
+		spans = append(spans, span{start: start, end: end, kind: "KNOWN", rule: rule})
 	})
 	// Allowed values are dropped before overlaps are resolved, so that an
 	// allowed span never hides a secret inside it.

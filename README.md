@@ -245,8 +245,11 @@ llmsp masked show __LLMSP_NAME_b050417708ad__   # one value, by placeholder or I
   each request to its `proxied` log line (`masked_ids=...`), to look them up
   with `llmsp masked show`.
 
-To stop masking such a value, add it to `allowlist` (see `config.example.yaml`),
-or fix the rule with an `allow:` pattern.
+To stop masking such a value, add a pattern that matches it to `allowlist`
+in `config.yaml` (see `config.example.yaml`): the allowlist also applies to
+values already stored, which are masked by exact match wherever they appear.
+A rule's own `allow:` patterns only stop that rule's new matches; a value
+already stored is still masked.
 
 ### Tiers: the range of a value without the value
 

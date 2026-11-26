@@ -35,10 +35,18 @@ type maskedView struct {
 
 func newMaskedView(c *rules.Catalog, show, showSecrets bool) maskedView {
 	v := maskedView{show: show, showSecrets: showSecrets, secretKinds: map[string]bool{}}
-	for _, id := range secretRulesets {
-		if set, ok := c.Sets[id]; ok {
-			for _, spec := range set.Rules {
-				v.secretKinds[placeholder.NormalizeKind(spec.Kind)] = true
+	// The built-in kinds count even when a user ruleset replaces one of
+	// these sets: old rows were masked by whatever rules were in use then.
+	catalogs := []*rules.Catalog{c}
+	if builtin, err := rules.Load(nil); err == nil {
+		catalogs = append(catalogs, builtin)
+	}
+	for _, c := range catalogs {
+		for _, id := range secretRulesets {
+			if set, ok := c.Sets[id]; ok {
+				for _, spec := range set.Rules {
+					v.secretKinds[placeholder.NormalizeKind(spec.Kind)] = true
+				}
 			}
 		}
 	}
