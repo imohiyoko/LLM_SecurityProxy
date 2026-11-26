@@ -1,8 +1,10 @@
 package allow
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -82,5 +84,53 @@ func TestWatcherThrottled(t *testing.T) {
 	w.Version()
 	if w.Allowed("", "Status") {
 		t.Fatal("read again within Every")
+	}
+}
+
+// Concurrent updates are applied one after the other: none is lost.
+func TestUpdateSerialized(t *testing.T) {
+	p := filepath.Join(t.TempDir(), FileName)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := Update(p, func(es []Entry) ([]Entry, error) {
+				return append(es, Entry{Value: fmt.Sprint("v", i)}), nil
+			}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	es, err := Load(p)
+	if err != nil || len(es) != 20 {
+		t.Fatalf("%d entries, %v", len(es), err)
+	}
+	if _, err := os.Stat(p + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf("lock left: %v", err)
+	}
+	// A change that fails leaves the file as it was.
+	if err := Update(p, func([]Entry) ([]Entry, error) { return nil, fmt.Errorf("no") }); err == nil {
+		t.Fatal("error lost")
+	}
+	if es, _ := Load(p); len(es) != 20 {
+		t.Fatalf("changed by a failed update: %d", len(es))
+	}
+}
+
+// A mode change alone makes the watcher read the file again.
+func TestWatcherModeChange(t *testing.T) {
+	p := filepath.Join(t.TempDir(), FileName)
+	Save(p, []Entry{{Value: "Status"}})
+	w := &Watcher{Path: p, Every: time.Nanosecond}
+	w.Version()
+	before := w.stamp
+	if err := os.Chmod(p, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	w.Version()
+	if w.stamp == before {
+		t.Fatal("mode change not noticed")
 	}
 }

@@ -63,17 +63,75 @@ func Load(path string) ([]Entry, error) {
 	return f.Entries, nil
 }
 
-// Save replaces the entries.
+// Save replaces the entries, through a temporary file of its own in the
+// same directory, so a reader never sees a partial file.
 func Save(path string, entries []Entry) error {
 	b, err := json.MarshalIndent(file{Entries: entries}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, err = f.Write(append(b, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
+
+// lockWait bounds how long Update waits for another one; a lock older than
+// lockStale is left over from a process that died and is taken over.
+const (
+	lockWait  = 10 * time.Second
+	lockStale = time.Minute
+)
+
+// Update changes the entries with change, holding a lock file next to path
+// so that concurrent updates (two `llmsp allow` commands) are applied one
+// after the other, each to the entries as the previous one left them.
+func Update(path string, change func([]Entry) ([]Entry, error)) error {
+	lock := path + ".lock"
+	deadline := time.Now().Add(lockWait)
+	for {
+		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			f.Close()
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if fi, serr := os.Stat(lock); serr == nil && time.Since(fi.ModTime()) > lockStale {
+			os.Remove(lock)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s is held by another llmsp allow; remove it if none is running", lock)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer os.Remove(lock)
+	entries, err := Load(path)
+	if err != nil {
+		return err
+	}
+	entries, err = change(entries)
+	if err != nil {
+		return err
+	}
+	return Save(path, entries)
 }
 
 // Covers reports whether e applies to profile.
@@ -107,6 +165,7 @@ type Watcher struct {
 type stamp struct {
 	mod   time.Time
 	size  int64
+	mode  os.FileMode // a chmod that makes the file unreadable changes no other field
 	err   bool
 	exist bool
 }
@@ -123,7 +182,7 @@ func (w *Watcher) refresh(now time.Time) {
 	w.checked = now
 	var st stamp
 	if fi, err := os.Stat(w.Path); err == nil {
-		st = stamp{mod: fi.ModTime(), size: fi.Size(), exist: true}
+		st = stamp{mod: fi.ModTime(), size: fi.Size(), mode: fi.Mode(), exist: true}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		st.err = true
 	}

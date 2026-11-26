@@ -17,6 +17,7 @@ import (
 
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/allow"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/config"
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
 )
@@ -113,29 +114,28 @@ func allowAdd(args []string, c console) error {
 		value = rec.Value
 	}
 	if !found {
-		// Not stored: find what would mask it, to tell a credential.
-		ep, err := e.cfg.Masking(profile)
-		if err != nil && profile == "default" {
-			ep, err = e.cfg.Masking("")
-		}
-		if err != nil {
-			return err
-		}
-		det, _, err := e.masking(ep)
-		if err != nil {
-			return err
-		}
 		rec = store.Record{Value: value}
-		for _, m := range det.Find(value) {
-			if m.Start == 0 && m.End == len(value) {
-				rec.Kind, rec.Rule = placeholder.NormalizeKind(m.Kind), m.Rule
-				break
+	}
+	// What the rules of every profile the entry applies to would mask in
+	// the value: a credential anywhere in it, for any of them, needs -force.
+	matches, err := e.findInProfiles(profile, value)
+	if err != nil {
+		return err
+	}
+	view := newMaskedView(e.catalog, true, false, recs)
+	secret := view.secret(rec)
+	for _, m := range matches {
+		r := store.Record{Kind: placeholder.NormalizeKind(m.Kind), Origin: store.Origin{Rule: m.Rule}}
+		if !found && rec.Rule == "" && m.Start == 0 && m.End == len(value) {
+			rec.Kind, rec.Rule = r.Kind, r.Rule // shown as the value's rule
+		}
+		if view.secret(r) {
+			secret = true
+			if rec.Rule == "" {
+				rec.Kind, rec.Rule = r.Kind, r.Rule
 			}
 		}
 	}
-
-	view := newMaskedView(e.catalog, true, false, recs)
-	secret := view.secret(rec)
 	if secret && !force {
 		return fmt.Errorf("this value was masked by a credential rule (%s, %s); if you are sure it is not a secret, add -force", orDash(rec.Rule), orDash(rec.Kind))
 	}
@@ -180,15 +180,62 @@ func allowAdd(args []string, c console) error {
 			return nil
 		}
 	}
-	entries = append(entries, allow.Entry{
+	// The file is read again under the lock: another llmsp allow may have
+	// changed it while this one waited for confirmation.
+	entry := allow.Entry{
 		Value: value, Profile: profile, Kind: rec.Kind, Rule: rec.Rule,
 		Added: time.Now().UTC().Truncate(time.Second), Unconfirmed: yes,
-	})
-	if err := allow.Save(path, entries); err != nil {
+	}
+	already := false
+	if err := allow.Update(path, func(entries []allow.Entry) ([]allow.Entry, error) {
+		if allow.Index(entries, value, profile) >= 0 {
+			already = true
+			return entries, nil
+		}
+		return append(entries, entry), nil
+	}); err != nil {
 		return err
+	}
+	if already {
+		fmt.Fprintln(c.out, "already allowed")
+		return nil
 	}
 	fmt.Fprintf(c.out, "added; a running proxy stops masking it within a second (%s)\n", path)
 	return nil
+}
+
+// findInProfiles returns what the rules of profile would match in value; with
+// no profile, what those of every configured profile and of the top level
+// would, since such an entry applies to all of them.
+func (e *env) findInProfiles(profile, value string) ([]detect.Match, error) {
+	var eps []config.Endpoint
+	if profile == "" || profile == "default" {
+		base, err := e.cfg.Masking("")
+		if err != nil {
+			return nil, err
+		}
+		eps = append(eps, base)
+	}
+	if profile == "" {
+		for name := range e.cfg.Profiles {
+			eps = append(eps, e.cfg.Endpoint(name))
+		}
+	} else if profile != "default" {
+		ep, err := e.cfg.Masking(profile)
+		if err != nil {
+			return nil, err
+		}
+		eps = append(eps, ep)
+	}
+	var out []detect.Match
+	for _, ep := range eps {
+		det, _, err := e.masking(ep)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, det.Find(value)...)
+	}
+	return out, nil
 }
 
 // parseID takes a placeholder or a bare ID.
@@ -258,31 +305,31 @@ func allowRm(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	path := allow.Path(e.cfg.DataDir)
-	entries, err := allow.Load(path)
-	if err != nil {
-		return err
-	}
-	i := -1
+	n := 0
 	switch {
 	case value != "" && e.flags.NArg() == 0:
-		if i = allow.Index(entries, value, profile); i < 0 {
-			return errors.New("no such entry")
-		}
 	case value == "" && e.flags.NArg() == 1:
-		n, err := strconv.Atoi(e.flags.Arg(0))
-		if err != nil || n < 1 || n > len(entries) {
-			return fmt.Errorf("%q: want a number from `llmsp allow list` (1-%d)", e.flags.Arg(0), len(entries))
+		if n, err = strconv.Atoi(e.flags.Arg(0)); err != nil || n < 1 {
+			return fmt.Errorf("%q: want a number from `llmsp allow list`", e.flags.Arg(0))
 		}
-		i = n - 1
 	default:
 		return errors.New("usage: llmsp allow rm N, or -value V [-profile P]")
 	}
-	removed := entries[i]
-	entries = slices.Delete(entries, i, i+1)
-	if err := allow.Save(path, entries); err != nil {
+	// Under the lock, on the entries as they are now. The value is not
+	// printed: it may be a credential added with -force.
+	if err := allow.Update(allow.Path(e.cfg.DataDir), func(entries []allow.Entry) ([]allow.Entry, error) {
+		i := n - 1
+		if value != "" {
+			if i = allow.Index(entries, value, profile); i < 0 {
+				return nil, errors.New("no such entry")
+			}
+		} else if i >= len(entries) {
+			return nil, fmt.Errorf("no entry %d: `llmsp allow list` shows %d", n, len(entries))
+		}
+		return slices.Delete(entries, i, i+1), nil
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "removed %q; a running proxy masks it again within a second\n", removed.Value)
+	fmt.Fprintln(out, "removed; a running proxy masks the value again within a second")
 	return nil
 }

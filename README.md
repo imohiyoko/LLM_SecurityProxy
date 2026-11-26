@@ -438,7 +438,9 @@ See [docs/design.md](docs/design.md). In short:
   identifiers, not content. A client that puts a secret there sends it as is.
 - An agent that can run commands on your machine can run `llmsp allow add
   -yes` (or edit `allow.json` or `config.yaml`) and stop a value being masked.
-  Such entries are logged as a warning; review them with `llmsp allow list`.
+  Entries added with `-yes` are logged as a warning; review `allow.json`
+  entries with `llmsp allow list`. Changes to `allowlist` in `config.yaml`
+  are not listed there: check that file itself.
 - Routing picks a configured profile from headers and path prefixes the client
   sends. It is a convenience, not an enforcement boundary: any process that can
   reach the listener can choose among the profiles those routes expose.

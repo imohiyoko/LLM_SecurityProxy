@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,5 +86,47 @@ func TestAllowAddListRm(t *testing.T) {
 	entries, _ = allow.Load(path)
 	if len(entries) != 1 || entries[0].Value != testsecret.GitHubToken() {
 		t.Fatalf("after rm: %+v", entries)
+	}
+}
+
+// A value with a credential inside it, or one only another profile's rules
+// find, needs -force; removing an entry does not print its value.
+func TestAllowAddCredentialAnywhere(t *testing.T) {
+	cfg, _ := maskedSetup(t)
+	cfgPath := strings.TrimPrefix(cfg, "-config=")
+	if err := os.WriteFile(cfgPath, []byte(`listen: 127.0.0.1:9001
+rulesets:
+  disable: [builtin/credentials]
+routes:
+  - client: codex
+    profile: codex
+profiles:
+  codex:
+    rulesets:
+      enable: [builtin/credentials]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	add := func(args ...string) (string, error) {
+		var out bytes.Buffer
+		err := allowAdd(append([]string{cfg}, args...), console{in: strings.NewReader("y\n"), out: &out, tty: true})
+		return out.String(), err
+	}
+	key := testsecret.AWSAccessKey()
+	// Only codex finds it: an entry for every profile needs -force.
+	if _, err := add("-value", "key "+key); err == nil || !strings.Contains(err.Error(), "-force") {
+		t.Fatalf("partial credential for every profile: %v", err)
+	}
+	// The top level alone does not mask it.
+	if _, err := add("-value", "key "+key, "-profile", "default"); err != nil {
+		t.Fatalf("top level only: %v", err)
+	}
+	out, err := add("-force", "-value", "key "+key)
+	if err != nil || strings.Contains(out, key) {
+		t.Fatalf("-force: %v\n%s", err, out)
+	}
+	var rm bytes.Buffer
+	if err := allowRm([]string{cfg, "2"}, &rm); err != nil || strings.Contains(rm.String(), key) {
+		t.Fatalf("rm: %v %s", err, rm.String())
 	}
 }
