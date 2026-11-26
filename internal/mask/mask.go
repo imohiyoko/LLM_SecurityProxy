@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/allow"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/store"
@@ -31,8 +32,13 @@ const cacheMinLen = 256
 
 const cacheMaxEntries = 4096
 
-// Stats counts masked values per kind.
+// Stats counts masked values per kind, and under AllowedStat the matches
+// left unmasked because they are allowlisted.
 type Stats map[string]int
+
+// AllowedStat is the Stats key of allowlisted matches. Kinds are upper case,
+// so it is never one.
+const AllowedStat = "allowlisted"
 
 // IDs is the set of placeholder IDs issued while masking one request. Only
 // these may be restored in the response to that request: a placeholder is
@@ -51,8 +57,13 @@ type Masker struct {
 	cache map[cacheKey]cached
 
 	// Profile is recorded with each value this masker stores first, so
-	// `llmsp masked list` can tell which profile masked it.
+	// `llmsp masked list` can tell which profile masked it. Exact entries
+	// limited to a profile apply when it is this one.
 	Profile string
+	// Exact, if set, holds values never to mask, matched exactly (`llmsp
+	// allow add`). They can change while the masker runs.
+	Exact        *allow.Watcher
+	exactVersion uint64 // Exact's version the cache was computed with; mu
 
 	afterMask func() // test hook: runs between masking and caching
 }
@@ -70,6 +81,8 @@ type cached struct {
 	ids   []string
 	// version is the store's known-list version out was computed with.
 	version uint64
+	// exact is the Exact version out was computed with.
+	exact uint64
 }
 
 // cacheMaxDelta: a cached result older than this many stored values is
@@ -120,12 +133,24 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 		return s, nil
 	}
 	known, version := m.store.Known()
+	var exact uint64
+	if m.Exact != nil {
+		// Results cached before the allowed values changed may mask a value
+		// now allowed, or leave one unmasked that no longer is.
+		exact = m.Exact.Version()
+		m.mu.Lock()
+		if exact > m.exactVersion {
+			m.cache = map[cacheKey]cached{}
+			m.exactVersion = exact
+		}
+		m.mu.Unlock()
+	}
 
 	if len(s) >= cacheMinLen {
 		m.mu.Lock()
 		c, ok := m.cache[ck]
 		m.mu.Unlock()
-		if ok && m.stillValid(s, c.version, known, version) {
+		if ok && c.exact == exact && m.stillValid(s, c.version, known, version) {
 			if c.version != version {
 				m.mu.Lock()
 				if cur, ok := m.cache[ck]; ok && cur.version < version {
@@ -163,11 +188,11 @@ func (m *Masker) run(ck cacheKey, extra []detect.Match, stats Stats, ids IDs) (s
 		// since, by this call or a concurrent one. A result already cached
 		// under a newer version is kept.
 		m.mu.Lock()
-		if cur, ok := m.cache[ck]; !ok || cur.version <= version {
+		if cur, ok := m.cache[ck]; exact == m.exactVersion && (!ok || cur.version <= version) {
 			if !ok && len(m.cache) >= cacheMaxEntries {
 				m.cache = map[cacheKey]cached{}
 			}
-			m.cache[ck] = cached{out: out, stats: local, ids: issued, version: version}
+			m.cache[ck] = cached{out: out, stats: local, ids: issued, version: version, exact: exact}
 		}
 		m.mu.Unlock()
 	}
@@ -276,9 +301,17 @@ func (m *Masker) mask(s string, extra []detect.Match, stats Stats, issued *[]str
 	// allowed span never hides a secret inside it.
 	var fields []span
 	kept := spans[:0]
+	var allowedAt map[[2]int]bool
 	for _, sp := range spans {
 		switch {
 		case !sp.keep && m.allowed(s[sp.start:sp.end]):
+			if !allowedAt[[2]int{sp.start, sp.end}] {
+				if allowedAt == nil {
+					allowedAt = map[[2]int]bool{}
+				}
+				allowedAt[[2]int{sp.start, sp.end}] = true
+				stats[AllowedStat]++
+			}
 		// A field value to redact is not split around other spans like a
 		// field value to restore: redacting it whole hides whatever it
 		// contains and stores none of it.
@@ -503,7 +536,7 @@ func (m *Masker) allowed(v string) bool {
 			return true
 		}
 	}
-	return false
+	return m.Exact != nil && m.Exact.Allowed(m.Profile, v)
 }
 
 // needsJSONEscape reports whether jsonEscaped(v) differs from v; it is the

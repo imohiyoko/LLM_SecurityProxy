@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/allow"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
@@ -196,12 +197,20 @@ func maskedList(args []string, out io.Writer) error {
 	if limit > 0 && len(shown) > limit {
 		shown = shown[:limit]
 	}
+	allowed, err := allow.Load(allow.Path(e.cfg.DataDir))
+	if err != nil {
+		return err
+	}
 	view := newMaskedView(e.catalog, show, showSecrets, recs)
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PLACEHOLDER\tRULE\tPROFILE\tFIRST MASKED\tVALUE")
 	for _, r := range shown {
+		v := view.value(r, show, 80)
+		if slices.ContainsFunc(allowed, func(a allow.Entry) bool { return a.Value == r.Value }) {
+			v += "  [allowed]"
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", placeholder.Format(r.Kind, r.ID), orDash(r.Rule),
-			orDash(r.Profile), r.Created.Local().Format("2006-01-02 15:04"), view.value(r, show, 80))
+			orDash(r.Profile), r.Created.Local().Format("2006-01-02 15:04"), v)
 	}
 	if err := w.Flush(); err != nil {
 		return err

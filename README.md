@@ -245,11 +245,33 @@ llmsp masked show __LLMSP_NAME_b050417708ad__   # one value, by placeholder or I
   each request to its `proxied` log line (`masked_ids=...`), to look them up
   with `llmsp masked show`.
 
-To stop masking such a value, add a pattern that matches it to `allowlist`
-in `config.yaml` (see `config.example.yaml`): the allowlist also applies to
-values already stored, which are masked by exact match wherever they appear.
-A rule's own `allow:` patterns only stop that rule's new matches; a value
-already stored is still masked.
+### Never masking a value again
+
+```sh
+llmsp allow add __LLMSP_NAME_b050417708ad__   # shows the value and rule, asks y/N
+llmsp allow add -value build-42                # a value not stored (yet, or redacted)
+llmsp allow add -profile codex __LLMSP_...__   # for one profile only
+llmsp allow list                               # numbered
+llmsp allow rm 2                               # or: -value V [-profile P]
+```
+
+- The value is matched exactly: wherever a rule or the known-value pass finds
+  exactly this text, it is left as it is. A longer value that contains it is
+  masked as before. For anything broader, use `allowlist` patterns in
+  `config.yaml`, which also apply to stored values. A rule's own `allow:`
+  patterns only stop that rule's new matches; a value already stored is
+  still masked.
+- Entries are kept in plain text in `allow.json` in the data directory (mode
+  0600), so you can review them. A running proxy reads the file again within a
+  second; no restart. If the file cannot be read, nothing in it is allowed, and
+  the proxy logs an error. Each `proxied` log line counts the matches left
+  unmasked this way and by `allowlist` (`allowlisted=N`).
+- Confirmation is asked on the terminal. Without one (a script, or an agent's
+  shell), `-yes` is required; such entries are marked `(-yes)` in `allow list`
+  and the proxy logs a warning for them.
+- A value masked by `builtin/credentials` or `builtin/generic` also needs
+  `-force`, and is never printed by `allow add` or `allow list`.
+- The value stays in the store; `llmsp allow rm` makes it masked again.
 
 ### Tiers: the range of a value without the value
 
@@ -414,6 +436,11 @@ See [docs/design.md](docs/design.md). In short:
   fields (`id`, `name`, `model`, `call_id`, base64 `data`, ...) are forwarded
   unmasked: the API rejects edited thinking blocks, and the others are
   identifiers, not content. A client that puts a secret there sends it as is.
+- An agent that can run commands on your machine can run `llmsp allow add
+  -yes` (or edit `allow.json` or `config.yaml`) and stop a value being masked.
+  Entries added with `-yes` are logged as a warning; review `allow.json`
+  entries with `llmsp allow list`. Changes to `allowlist` in `config.yaml`
+  are not listed there: check that file itself.
 - Routing picks a configured profile from headers and path prefixes the client
   sends. It is a convenience, not an enforcement boundary: any process that can
   reach the listener can choose among the profiles those routes expose.

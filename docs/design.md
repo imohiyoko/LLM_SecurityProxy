@@ -372,6 +372,27 @@ rows show no rule. Placeholder-shaped text the store did not issue is
 recorded under `llmsp:foreign-placeholder`. Redacted values are never stored
 and so never listed.
 
+## Allowed values
+
+`<data_dir>/allow.json` holds values never to mask, written by `llmsp allow
+add` / `rm`: the value in plain text, an optional profile, the kind and rule it
+was masked by (for review), when it was added, and whether it was added with
+`-yes` instead of a terminal confirmation. It is replaced atomically (a
+temporary file of its own, renamed), and `add` / `rm` hold `allow.json.lock`
+while they read, change and write it, so concurrent commands do not undo each
+other. `add` checks the value with the rules of every profile the entry applies
+to (all of them when it names none): a credential match anywhere in the value
+needs `-force`.
+
+Every masker shares one watcher, which looks at the file's size,
+modification time and mode at most once a second and reads it again when they change. A
+file that cannot be read or parsed allows nothing. In `mask`, an allowed value
+is dropped with the `allowlist` patterns, before overlaps are resolved, and in
+the same places afterwards (pieces of field values, remainders around redacted
+spans): an exact match on the span's text, for an entry with no profile or the
+masker's. When the watcher's version changes, the masking cache is cleared, and
+a result computed with an older version is not cached.
+
 ## Security notes
 
 - Loopback only by default; responses contain restored secrets.
@@ -388,6 +409,9 @@ and so never listed.
   prefix, or a value quoted in a form other than JSON's, can reach the model
   unmasked. Values from credential rules are not printed by default for this
   reason.
+- `llmsp allow add` refuses a value masked by a credential rule without
+  `-force`, and never prints such a value: an agent running it would read it
+  in the command output, which is no longer masked once the value is allowed.
 - The client's API key (`upstream.auth_headers`) is forwarded unchanged; llmsp
   does not store it.
 
@@ -397,3 +421,4 @@ and so never listed.
 - NER-based detection (names, organisations) in free text. Names are only
   found by their field name, and in free text once seen in a field.
 - Purging stored values.
+- `llmsp allow add -rule`: allowing a value only when a given rule matches it.
