@@ -107,15 +107,56 @@ func TestUpdateSerialized(t *testing.T) {
 	if err != nil || len(es) != 20 {
 		t.Fatalf("%d entries, %v", len(es), err)
 	}
-	if _, err := os.Stat(p + ".lock"); !os.IsNotExist(err) {
-		t.Fatalf("lock left: %v", err)
-	}
 	// A change that fails leaves the file as it was.
 	if err := Update(p, func([]Entry) ([]Entry, error) { return nil, fmt.Errorf("no") }); err == nil {
 		t.Fatal("error lost")
 	}
 	if es, _ := Load(p); len(es) != 20 {
 		t.Fatalf("changed by a failed update: %d", len(es))
+	}
+}
+
+// A lock file left behind does not block; a held lock makes Update wait
+// until it is released, and the update then sees the holder's change.
+func TestUpdateLockHeld(t *testing.T) {
+	p := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(p+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Update(p, func(es []Entry) ([]Entry, error) {
+		return append(es, Entry{Value: "a"}), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p+".lock", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if busy, err := tryLock(f); busy || err != nil {
+		t.Fatalf("lock not free: %v %v", busy, err)
+	}
+	done := make(chan error)
+	go func() {
+		done <- Update(p, func(es []Entry) ([]Entry, error) {
+			return append(es, Entry{Value: "c"}), nil
+		})
+	}()
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("updated under a held lock: %v", err)
+	default:
+	}
+	es, _ := Load(p)
+	Save(p, append(es, Entry{Value: "b"}))
+	unlock(f)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	es, _ = Load(p)
+	if len(es) != 3 || es[1].Value != "b" || es[2].Value != "c" {
+		t.Fatalf("entries %v", es)
 	}
 }
 

@@ -91,38 +91,36 @@ func Save(path string, entries []Entry) error {
 	return err
 }
 
-// lockWait bounds how long Update waits for another one; a lock older than
-// lockStale is left over from a process that died and is taken over.
-const (
-	lockWait  = 10 * time.Second
-	lockStale = time.Minute
-)
+// lockWait bounds how long Update waits for another one.
+const lockWait = 10 * time.Second
 
-// Update changes the entries with change, holding a lock file next to path
-// so that concurrent updates (two `llmsp allow` commands) are applied one
-// after the other, each to the entries as the previous one left them.
+// Update changes the entries with change, holding an OS lock on a file next
+// to path so that concurrent updates (two `llmsp allow` commands) are applied
+// one after the other, each to the entries as the previous one left them.
+// The OS releases the lock when its holder exits, however it exits, so a
+// lock is never taken over from a live holder. The lock file itself stays.
 func Update(path string, change func([]Entry) ([]Entry, error)) error {
 	lock := path + ".lock"
+	f, err := os.OpenFile(lock, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 	deadline := time.Now().Add(lockWait)
 	for {
-		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			f.Close()
+		busy, err := tryLock(f)
+		if err != nil {
+			return fmt.Errorf("lock %s: %w", lock, err)
+		}
+		if !busy {
 			break
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return err
-		}
-		if fi, serr := os.Stat(lock); serr == nil && time.Since(fi.ModTime()) > lockStale {
-			os.Remove(lock)
-			continue
-		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%s is held by another llmsp allow; remove it if none is running", lock)
+			return fmt.Errorf("%s is held by another llmsp allow", lock)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	defer os.Remove(lock)
+	defer unlock(f)
 	entries, err := Load(path)
 	if err != nil {
 		return err

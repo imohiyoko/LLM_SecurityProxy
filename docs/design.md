@@ -378,9 +378,11 @@ and so never listed.
 add` / `rm`: the value in plain text, an optional profile, the kind and rule it
 was masked by (for review), when it was added, and whether it was added with
 `-yes` instead of a terminal confirmation. It is replaced atomically (a
-temporary file of its own, renamed), and `add` / `rm` hold `allow.json.lock`
-while they read, change and write it, so concurrent commands do not undo each
-other. `add` checks the value with the rules of every profile the entry applies
+temporary file of its own, renamed), and `add` / `rm` hold an OS file lock
+(`flock`, `LockFileEx` on Windows) on `allow.json.lock` while they read, change
+and write it, so concurrent commands do not undo each other. The OS releases
+the lock when its holder exits, so a lock left by a killed command needs no
+takeover, and a running one is never taken over. `add` checks the value with the rules of every profile the entry applies
 to (all of them when it names none): a credential match anywhere in the value
 needs `-force`.
 
