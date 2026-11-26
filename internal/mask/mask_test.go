@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/allow"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/placeholder"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/rules"
@@ -578,5 +579,48 @@ func TestOriginRecorded(t *testing.T) {
 		if got[v] != o {
 			t.Errorf("%s: origin %+v, want %+v", v, got[v], o)
 		}
+	}
+}
+
+// Exact allowed values are not masked, as found by a rule or as a known
+// value, from the next request on, cached results included; a longer value
+// containing one is still masked.
+func TestExactAllowed(t *testing.T) {
+	m, _ := newMasker(t)
+	p := filepath.Join(t.TempDir(), allow.FileName)
+	m.Exact = &allow.Watcher{Path: p, Every: time.Nanosecond}
+	m.Profile = "claude"
+	pad := strings.Repeat("filler text. ", 30) // long enough to be cached
+	in := pad + "mail bob@corp.dev and amy@corp.dev"
+	if out, _ := m.String(in, Stats{}, nil); strings.Contains(out, "bob@corp.dev") {
+		t.Fatalf("not masked before: %s", out)
+	}
+	if err := allow.Save(p, []allow.Entry{{Value: "bob@corp.dev"}, {Value: "amy@corp.dev", Profile: "codex"}}); err != nil {
+		t.Fatal(err)
+	}
+	stats := Stats{}
+	out, err := m.String(in, stats, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "bob@corp.dev") || strings.Contains(out, "amy@corp.dev") {
+		t.Fatalf("after allow: %s", out)
+	}
+	if stats[AllowedStat] != 1 || stats["EMAIL"] != 1 {
+		t.Fatalf("stats %v", stats)
+	}
+	// As a known value (no rule would find it here) and inside a longer one.
+	if out, _ := m.String("x bob@corp.dev", Stats{}, nil); out != "x bob@corp.dev" {
+		t.Fatalf("known: %s", out)
+	}
+	if out, _ := m.String("x zbob@corp.dev", Stats{}, nil); strings.Contains(out, "bob@corp.dev") {
+		t.Fatalf("longer value: %s", out)
+	}
+	// Removing the entry masks it again.
+	if err := allow.Save(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := m.String(in, Stats{}, nil); strings.Contains(out, "bob@corp.dev") {
+		t.Fatalf("after removal: %s", out)
 	}
 }

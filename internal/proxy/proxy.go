@@ -184,6 +184,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, err = io.Copy(w, resp.Body)
 	}
 	attrs := []any{"status", resp.StatusCode, "masked", statsAttr(stats), "restored", restored}
+	if n := stats[mask.AllowedStat]; n > 0 {
+		attrs = append(attrs, "allowlisted", n)
+	}
 	if s.LogIDs {
 		attrs = append(attrs, "masked_ids", strings.Join(slices.Sorted(maps.Keys(ids)), ","))
 	}
@@ -475,12 +478,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func statsAttr(st mask.Stats) string {
-	if len(st) == 0 {
-		return "none"
-	}
 	var parts []string
 	for _, k := range slices.Sorted(maps.Keys(st)) {
+		if k == mask.AllowedStat {
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", k, st[k]))
+	}
+	if len(parts) == 0 {
+		return "none"
 	}
 	return strings.Join(parts, ",")
 }

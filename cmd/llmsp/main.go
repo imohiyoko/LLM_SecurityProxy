@@ -16,6 +16,11 @@
 //	                                              show stored (masked) values, newest first
 //	llmsp masked show [-config PATH] [-show-secrets] PLACEHOLDER|ID
 //	                                              show one stored value and the rule that masked it
+//	llmsp allow add [-config PATH] [-profile P] [-force] [-yes] PLACEHOLDER|ID|-value V
+//	                                              never mask this value again (exact match)
+//	llmsp allow list [-config PATH]               show the values never masked
+//	llmsp allow rm [-config PATH] N|-value V [-profile P]
+//	                                              mask such a value again
 package main
 
 import (
@@ -39,6 +44,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/imohiyoko/LLM_SecurityProxy/internal/allow"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/config"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/detect"
 	"github.com/imohiyoko/LLM_SecurityProxy/internal/mask"
@@ -70,6 +76,8 @@ func run(args []string) error {
 		return relaxCmd(args)
 	case "masked":
 		return maskedCmd(args)
+	case "allow":
+		return allowCmd(args)
 	case "rules":
 		if len(args) == 0 {
 			return errors.New("usage: llmsp rules list|test")
@@ -168,6 +176,24 @@ func serve(args []string) error {
 	// issued it. A value once masked for any profile is masked by exact match
 	// in every profile, whatever its own rules. Each profile has its own rules.
 	named := len(cfg.Profiles) > 0 || len(cfg.Routes) > 0
+	// Values added with `llmsp allow add`, read again within a second of a
+	// change. One file for all profiles; an entry may name one.
+	exact := &allow.Watcher{
+		Path: allow.Path(cfg.DataDir),
+		Changed: func(entries []allow.Entry, err error) {
+			if err != nil {
+				log.Error("allow.json unreadable; its values are masked again", "err", err)
+				return
+			}
+			log.Info("allowed values loaded", "entries", len(entries))
+			for _, en := range entries {
+				if en.Unconfirmed {
+					log.Warn("allowed value added without confirmation (-yes); check it with `llmsp allow list`",
+						"kind", en.Kind, "rule", en.Rule, "profile", en.Profile, "added", en.Added)
+				}
+			}
+		},
+	}
 	// A profile reached by several routes, or also listening itself, is one
 	// handler.
 	handlers := map[string]*proxy.Server{}
@@ -193,6 +219,7 @@ func serve(args []string) error {
 		}
 		masker := mask.New(det, st, allow)
 		masker.Profile = ep.Name
+		masker.Exact = exact
 		h := &proxy.Server{
 			Upstream:     upstream,
 			Client:       client,
